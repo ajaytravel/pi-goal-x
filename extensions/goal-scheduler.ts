@@ -11,8 +11,6 @@ export class GoalScheduler {
 	private timer: ReturnType<typeof setTimeout> | undefined;
 	private ctx: ExtensionContext | undefined;
 	private inRun = false;
-	private prepared = false;
-	private liveContext = false;
 	private armedGeneration: string | undefined;
 	private declared = false;
 	private runGoalId: string | undefined;
@@ -183,14 +181,10 @@ export class GoalScheduler {
 		} catch (error) { return { content: [{ type: "text", text: `Scheduling decision NOT saved: ${error instanceof Error ? error.message : String(error)}` }], details: { error: true }, terminate: false }; }
 	}
 
-	prepare(): void { this.prepared = true; }
-	needsLiveContext(): boolean { return this.liveContext; }
-
 	/** One logical run can contain multiple agent_start events during native retry/compaction. */
 	begin(ctx: ExtensionContext): void {
 		this.ctx = ctx;
 		if (this.inRun) { this.core.runningGoalId = this.core.state.goal?.id ?? null; return; }
-		this.liveContext = !this.prepared; this.prepared = false;
 		this.inRun = true; this.declared = false; this.denied = false;
 		this.runGoalId = this.core.state.goal?.id;
 		this.cancelTimer(); this.core.runtime.clearContinuationTimer();

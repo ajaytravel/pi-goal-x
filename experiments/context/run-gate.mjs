@@ -5,7 +5,7 @@
  *   1. deterministic equality with experiments/context/baseline-main.json;
  *   2. tool schemas present in every breakdown;
  *   3. every semantic field classified (counts object complete);
- *   4. provider-visible checkpoint history <= 1 on active-goal fixtures;
+ *   4. provider-visible checkpoint markers individually bounded and stable;
  *   5. every registered fixture ID covered by the baseline.
  * No network, no child agents, no live model.
  */
@@ -70,17 +70,23 @@ for (const fixtureId of expectedFixtureIds) {
  if (scenario.draftPrompt && JSON.stringify([...names].sort()) !== JSON.stringify(["goal_question", "goal_questionnaire", "propose_goal_draft"].sort())) failures.push(`${fixtureId}: incorrect drafting profile`);
  if (fixtureId === "tasks-disabled" && names.some(n => n === "set_goal_tasks" || n === "update_goal_task")) failures.push(`${fixtureId}: disabled tools advertised`);
  if (["completion-audit", "audit-rejection-and-rework", "oracle-consultation"].includes(fixtureId) && !(breakdown.childRequestChars > 0)) failures.push(`${fixtureId}: child request not captured`);
- if (fixtureId === "post-compaction-turn" && !captured.extensionSystem.includes("POST-COMPACTION RESYNC")) failures.push(`${fixtureId}: compaction hook was not exercised`);
+ if (fixtureId === "post-compaction-turn" && !serializedRequestText(captured).includes("POST-COMPACTION RESYNC")) failures.push(`${fixtureId}: compaction hook was not exercised`);
 
-	// 4. checkpoint history bounded (post-#30 invariant)
-	if (breakdown.historicalCheckpointChars > 0) {
-		failures.push(`${fixtureId}: historical checkpoint payload visible to the provider (${breakdown.historicalCheckpointChars} chars) — must stay filtered`);
+	// 4. Retain bounded markers in place: deleting old ones breaks prefix caching.
+	for (const message of captured.messages ?? []) {
+		if (message.customType === "pi-goal-event" && (typeof message.content !== "string" || message.content.length > 160 || !message.content.endsWith('v="2"/>'))) {
+			failures.push(`${fixtureId}: checkpoint is not a bounded v2 trigger`);
+		}
 	}
+	if (captured.extensionSystem) failures.push(`${fixtureId}: goal state must not enter the system prefix`);
+	const liveState = captured.messages.filter(m => m.customType === "pi-goal-live-context");
+	if (liveState.length > 1 || (liveState.length && captured.messages.at(-1) !== liveState[0])) failures.push(`${fixtureId}: live state must occur once at the tail`);
+	const liveText = liveState[0]?.content ?? "";
 
 	// Required single-source markers on active-goal fixtures whose turn was
 	// actually dispatched with an active block (a stale-checkpoint trigger
 	// correctly aborts and injects GOAL STALE instead).
-	const hasActiveBlock = /\[PI GOAL ACTIVE goalId=/.test(captured.extensionSystem ?? "");
+	const hasActiveBlock = /\[PI GOAL ACTIVE goalId=/.test(liveText);
 	if (scenario.goal?.status === "active" && hasActiveBlock) {
 		if (semantic.goalActiveMarker !== 1) failures.push(`${fixtureId}: [PI GOAL ACTIVE] block count ${semantic.goalActiveMarker} != 1`);
 		// Long objectives are truncated to MAX_OBJECTIVE_BLOCK_CHARS — only the
@@ -89,7 +95,7 @@ for (const fixtureId of expectedFixtureIds) {
 		const fullObjective = scenario.goal.objective ?? "";
 		const objectiveNeedle = fullObjective.slice(0, 300);
 		const objectiveOccurrences = objectiveNeedle
-			? (captured.extensionSystem.match(new RegExp(escapeRegExp(objectiveNeedle), "g")) ?? []).length
+			? (liveText.match(new RegExp(escapeRegExp(objectiveNeedle), "g")) ?? []).length
 			: 0;
 		if (objectiveOccurrences !== 1) failures.push(`${fixtureId}: objective appears ${objectiveOccurrences}x in composed request (must be exactly 1)`);
 		if (scenario.goal?.verificationContract && fixtureId !== "get-goal-default-and-verbose" && semantic.verificationContract !== 1) {

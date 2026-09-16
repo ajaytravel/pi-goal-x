@@ -106,14 +106,14 @@ test("text caches preserve SDK ANSI, Unicode, padding and width semantics and re
  }
 });
 
-test("context compaction preserves interleaved messages and leaves the latest marker in its original position", () => {
+test("context normalization preserves all marker positions and ignores mutable goal state", () => {
  const f=fixture(); try {
   const marker = {customType:"pi-goal-event",content:"legacy",details:{goalId:f.goal.id,kind:"checkpoint",version:1}};
   const a={role:"user",content:"a"}; const b={role:"assistant",content:"b"}; const c={role:"toolResult",content:"c"};
   const result=compactGoalCheckpointContext([a,marker,b,marker,c],f.goal)!;
-  assert.equal(result.length,4); assert.equal(result[0],a); assert.equal(result[1],b); assert.equal(result[3],c);
-  assert.equal((result[2] as {details:{kind:string}}).details.kind,"checkpoint");
-  assert.equal((compactGoalCheckpointContext([marker],null)![0] as {details:{kind:string}}).details.kind,"stale");
+  assert.equal(result.length,5); assert.equal(result[0],a); assert.equal(result[2],b); assert.equal(result[4],c);
+  assert.equal((result[1] as {details:{kind:string}}).details.kind,"checkpoint");
+  assert.equal((compactGoalCheckpointContext([marker],null)![0] as {details:{kind:string}}).details.kind,"checkpoint");
   assert.equal(compactGoalCheckpointContext([a,b,c],null),null);
  } finally {f.cleanup();}
 });

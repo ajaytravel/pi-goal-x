@@ -9,7 +9,7 @@ import type { GoalCore } from "../extensions/goal-state.ts";
 import { createGoal, goalFocusDetails, cloneGoal, normalizeGoalRecord } from "../extensions/goal-record.ts";
 import { writeActiveGoalFile, parseGoalFile } from "../extensions/storage/goal-files.ts";
 import { invalidateGoalSettingsCache, parseGoalSettings, saveGoalSettingsFileConfig, loadGoalSettings } from "../extensions/goal-settings.ts";
-import { normalizeGoalScheduler, schedulerSummary } from "../extensions/goal-scheduler-state.ts";
+import { newGoalScheduler, normalizeGoalScheduler, schedulerSummary } from "../extensions/goal-scheduler-state.ts";
 
 async function fixture(t: TestContext, limit?: number, owner = "owner", existing?: string, strict = true) {
 	const cwd = existing ?? mkdtempSync(path.join(tmpdir(), "goal-scheduler-"));
@@ -460,4 +460,49 @@ test("default settings inherit strict mode with explicit false overriding global
  assert.equal(loadGoalSettings(h.cwd).strictExecutionContract, true);
  assert.deepEqual(parseGoalSettings({strictExecutionContract: false}), {strictExecutionContract: false});
  assert.equal(parseGoalSettings({strictExecutionContract: "invalid"}).strictExecutionContract, undefined);
+});
+
+test("prompt cache: normal and custom runs preserve history while refreshing all live goal state", async t => {
+ const h = await fixture(t);
+ const history: any[] = [{role: "user", content: "Work on the goal", timestamp: 1}];
+ const original = structuredClone(history);
+ const request = async () => (await h.handlers.context!({messages: history}, h.ctx)).messages;
+ const preflight = await h.handlers.before_agent_start!({prompt: "continue", systemPrompt: "host policy"}, h.ctx);
+ assert.equal(preflight, undefined, "goal state never rewrites the system prefix");
+ const first = await request();
+ assert.deepEqual(first.slice(0, -1), original);
+ assert.match(first.at(-1).content, /PI GOAL ACTIVE/);
+ const wire: any = {messages: [{role: "user", content: "Work on the goal"}, {role: "user", content: [{type: "text", text: first.at(-1).content, cache_control: {type: "ephemeral"}}]}]};
+ await h.handlers.before_provider_request!({payload: wire}, h.ctx);
+ assert.equal(wire.messages[0].content[0].cache_control.type, "ephemeral", "registered provider hook places the breakpoint on history");
+ assert.equal(wire.messages[1].content[0].cache_control, undefined);
+ h.core.state.goal!.usage.tokensUsed = 12345;
+ h.core.state.goal!.objective = "Changed objective";
+ h.core.state.goal!.scheduler = { ...newGoalScheduler("owner"), used: 7 };
+ const toolCall = {role: "assistant", content: [{type: "toolCall", id: "call-1", name: "read", arguments: {path: "README.md"}}], timestamp: 2};
+ const toolResult = {role: "toolResult", toolCallId: "call-1", toolName: "read", content: [{type: "text", text: "file contents"}], isError: false, timestamp: 3};
+ history.push(toolCall, toolResult);
+ const second = await request();
+ assert.deepEqual(second.slice(0, -1), history, "tool call and result stay adjacent");
+ assert.deepEqual(second.slice(0, original.length), first.slice(0, -1));
+ assert.match(second.at(-1).content, /12345 tokens/);
+ assert.match(second.at(-1).content, /Changed objective/);
+ assert.match(second.at(-1).content, /7\/unlimited/);
+ h.core.scheduler.begin(h.ctx); // Custom-message run bypassing preflight.
+ for (let i = 0; i < 4; i++) {
+  history.push({role: "custom", customType: "pi-goal-event", content: "legacy full prompt", details: {goalId: h.core.state.goal!.id, kind: "checkpoint"}, timestamp: i + 4});
+  const current = await request();
+  assert.deepEqual(current.slice(0, second.length - 1), second.slice(0, -1));
+  assert.equal(current.filter((m: any) => m.customType === "pi-goal-live-context").length, 1);
+  const before = current.slice(0, -1);
+  const again = await request();
+  assert.deepEqual(again.slice(0, -1), before);
+ }
+ assert.deepEqual(history[0], original[0], "request transforms never mutate stored history");
+ for (const status of ["paused", "blocked", "budget_limited"] as const) {
+  h.core.state.goal!.status = status;
+  const stopped = await request();
+  assert.match(stopped.at(-1).content, new RegExp(status.replace("_", " ").toUpperCase()));
+  assert.doesNotMatch(stopped.at(-1).content, /PI GOAL ACTIVE/);
+ }
 });

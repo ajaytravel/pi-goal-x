@@ -157,7 +157,7 @@ export async function captureOne(fixtureId) {
 
 	let raw = scenario.messages ?? (scenario.goal ? baseConversation(scenario.goal) : [userMessage("Hello")]);
 	if (scenario.draftPrompt) raw = [...raw, userMessage(scenario.draftPrompt)];
-	const messages = await capture.runContext(raw);
+	const messages = [...raw];
 
 	const actualSystem = turn.systemPrompt ?? capture.ctx.getSystemPrompt();
  const childRequests = [];
@@ -179,6 +179,7 @@ export async function captureOne(fixtureId) {
    messages.push({ role: "toolResult", toolName: "get_goal", toolCallId: "capture", content: result.content });
   }
  }
+ const providerMessages = await capture.runContext(messages);
  return {
   childRequests,
   sdkGuidanceChars: capture.ctx.getSystemPrompt().length - BASE_SYSTEM.length,
@@ -186,7 +187,7 @@ export async function captureOne(fixtureId) {
 		fixture: fixtureId,
 		baseSystem: capture.ctx.getSystemPrompt(),
 		extensionSystem: actualSystem.slice(capture.ctx.getSystemPrompt().length),
-		messages,
+		messages: providerMessages,
 		tools: capture.activeTools.map(toolCapture),
 	};
 }
