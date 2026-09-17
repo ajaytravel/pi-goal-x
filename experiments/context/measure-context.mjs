@@ -56,8 +56,8 @@ export function measureContext(captured) {
 
 	const baseSystemChars = captured.baseSystem.length;
 	const extensionSystemChars = (captured.extensionSystem ?? "").length;
-	// Goal state = the extension's injected system block only.
-	const goalStateChars = extensionSystemChars;
+	// Current goal state is a request-only message at the tail.
+	const goalStateChars = (captured.messages ?? []).filter(m => m.customType === "pi-goal-live-context").reduce((sum, m) => sum + m.content.length, 0);
 	const toolSchemaChars = serialized.tools.length;
 
 	const childRequestChars = (captured.childRequests ?? []).reduce((sum, request) => sum + request.system.length + JSON.stringify(request.messages).length + JSON.stringify(request.tools).length, 0);

@@ -40,6 +40,7 @@
     ".tests/goal-policy.test.ts",
     ".tests/goal-pool-snapshot.test.ts",
     ".tests/goal-pool.test.ts",
+    ".tests/goal-prompt-cache.test.ts",
     ".tests/goal-prompts.test.ts",
     ".tests/goal-questionnaire.test.ts",
     ".tests/goal-record.test.ts",
@@ -80,6 +81,7 @@
   ],
   "e2eFiles": [
     ".tests/e2e/goal-lifecycle-dashboard.test.ts",
+    ".tests/e2e/goal-prompt-cache-sdk.test.ts",
     ".tests/e2e/goal-scheduler-sdk.test.ts",
     ".tests/e2e/goal-session-safety.test.ts",
     ".tests/e2e/network-recovery-rpc.test.ts"

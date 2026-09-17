@@ -149,14 +149,15 @@ test("golden: stale checkpoint for a non-focused goal aborts the turn and inject
 		assert.ok(bas);
 
 		// A checkpoint claims a goal that is not focused/active in this session.
-		const result = await bas({
+		await bas({
 			systemPrompt: "base",
 			prompt: '<pi_goal_continuation goal_id="ghost-goal" kind="checkpoint">continue',
 			systemPromptOptions: {},
 		}, h.ctx);
 
 		assert.equal(h.aborts, 1, "stale checkpoint must abort the turn");
-		const systemPrompt = (result as { systemPrompt?: string } | undefined)?.systemPrompt ?? "";
+		const result = await h.handlers["context"]!({ messages: [] }, h.ctx);
+		const systemPrompt = (result as { messages?: {content: string}[] } | undefined)?.messages?.at(-1)?.content ?? "";
 		assert.match(systemPrompt, /\[GOAL STALE goalId=ghost-goal\]/);
 		assert.match(systemPrompt, /Do not perform task work for this stale checkpoint/);
 	} finally {
@@ -173,14 +174,15 @@ test("golden: matching checkpoint proceeds without stale handling", async () => 
 		const bas = h.handlers["before_agent_start"];
 		assert.ok(bas);
 
-		const result = await bas({
+		await bas({
 			systemPrompt: "base",
 			prompt: `<pi_goal_continuation goal_id="${goal.id}" kind="checkpoint">continue`,
 			systemPromptOptions: {},
 		}, h.ctx);
 
 		assert.equal(h.aborts, 0, "matching checkpoint must not abort");
-		const systemPrompt = (result as { systemPrompt?: string } | undefined)?.systemPrompt ?? "";
+		const result = await h.handlers["context"]!({ messages: [] }, h.ctx);
+		const systemPrompt = (result as { messages?: {content: string}[] } | undefined)?.messages?.at(-1)?.content ?? "";
 		assert.doesNotMatch(systemPrompt, /GOAL STALE/);
 	} finally {
 		// temp dir cleanup is best-effort.

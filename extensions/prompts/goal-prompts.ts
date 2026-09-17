@@ -11,8 +11,8 @@ export const MAX_PROMPT_FRAGMENT_CHARS = 10_000;
 
 /**
  * Issue #30: a persisted continuation checkpoint is a tiny trigger record, not
- * a full prompt. The authoritative goal state is injected once per turn by
- * before_agent_start; the persisted marker only needs to carry the goal id.
+ * a full prompt. The authoritative goal state is injected at the request tail by
+ * the context hook; the persisted marker only needs to carry the goal id.
  */
 export const CHECKPOINT_TRIGGER_MAX_CHARS = 160;
 
@@ -265,8 +265,8 @@ export function objectiveEditedPrompt(goal: GoalRecord): string {
  * Deprecated compatibility wrapper (issue #30). The full continuation prompt
  * was the defect: every auto-continue turn persisted the whole objective/task/
  * contract/policy block as a custom session message, growing sessions by
- * ~6.4K chars per turn. The authoritative state is now injected once per turn
- * by before_agent_start; the persisted follow-up is only a tiny trigger.
+ * ~6.4K chars per turn. The authoritative state is now injected at the request tail
+ * by the context hook; the persisted follow-up is only a tiny trigger.
  *
  * Kept for one minor release so external call sites migrate explicitly.
  */

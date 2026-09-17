@@ -1,4 +1,4 @@
-import { schedulerSummary } from "./goal-scheduler-state.ts";
+import { cacheGoalHistory } from "./goal-prompt-cache.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	GOAL_EVENT_ENTRY,
@@ -34,45 +34,21 @@ import type { GoalCore } from "./goal-state.ts";
 import { filterGoalSessionContext } from "./goal-session-safety.ts";
 import type { GoalMutationOutcome } from "./goal-service.ts";
 
-/**
- * Issue #30: provider-context checkpoint compaction (pure helper).
- *
- * Every historical checkpoint message is redundant: its authoritative state is
- * reconstructed from goal storage and injected once per turn by
- * before_agent_start. Normal provider requests therefore retain at most ONE
- * checkpoint marker — the latest — rewritten to the tiny bounded v2 trigger
- * content. Keeping one user-role turn-start marker avoids provider edge cases
- * where removing it would leave the request ending on an assistant or tool
- * result. Audit events, user messages, assistant messages, and tool results
- * pass through untouched.
- */
+/** Normalize checkpoints independently: deleting old markers shifts the cached prefix. */
 export function compactGoalCheckpointContext(
-	messages: readonly unknown[],
-	currentGoal: GoalRecord | null,
+ messages: readonly unknown[],
+ _currentGoal: GoalRecord | null,
 ): unknown[] | null {
- let lastCheckpointIndex = -1;
- let checkpointGoalId: string | null = null;
- const checkpoints: number[] = [];
- // Parse each message once; retain ordinary messages and rewrite only the last marker.
+ let output: unknown[] | null = null;
  for (let i = 0; i < messages.length; i++) {
-  const id = goalEventMessageId(messages[i] as {customType?: string; details?: unknown; content?: unknown});
-  if (id !== null) { checkpoints.push(i); lastCheckpointIndex = i; checkpointGoalId = id; }
+  const message = messages[i] as { customType?: string; details?: unknown; content?: unknown };
+  const id = goalEventMessageId(message);
+  if (id === null) { output?.push(message); continue; }
+  output ??= messages.slice(0, i);
+  output.push({ ...message, content: checkpointTriggerPrompt(id), display: false,
+   details: { version: 2, kind: "checkpoint", goalId: id } });
  }
- if (checkpointGoalId === null) return null;
- const output: unknown[] = [];
- let start = 0;
- for (const index of checkpoints) {
-  for (let i = start; i < index; i++) output.push(messages[i]);
-  start = index + 1;
- }
- const message = messages[lastCheckpointIndex] as Record<string, unknown>;
- output.push({...message, content: checkpointTriggerPrompt(checkpointGoalId), display: false, details: {
-  version: 2,
-  kind: currentGoal?.id === checkpointGoalId && currentGoal?.status === "active" ? "checkpoint" : "stale",
-  goalId: checkpointGoalId, currentGoalId: currentGoal?.id ?? null, currentStatus: currentGoal?.status ?? null,
- }});
- for (let i = start; i < messages.length; i++) output.push(messages[i]);
-	return output;
+ return output;
 }
 
 /**
@@ -84,22 +60,18 @@ export function compactGoalCheckpointContext(
  */
 export function registerGoalEvents(core: GoalCore): void {
 	const { pi } = core;
+	let liveContent: string | undefined;
+	pi.on("before_provider_request", event => cacheGoalHistory(event.payload, liveContent));
 	let continuationAfterSettleFor: string | null = null;
 	let networkErrorRecoveryAfterSettleFor: string | null = null;
 
 	pi.on("context", async (event, ctx) => {
 		const filtered = filterGoalSessionContext(event.messages);
 		const messages = compactGoalCheckpointContext(filtered ?? event.messages, core.state.goal) ?? filtered;
-		if (core.scheduler.needsLiveContext() && core.state.goal) {
-			const goal = core.state.goal;
-			const settings = loadGoalSettings(ctx.cwd);
-			// Custom-message runs bypass before_agent_start. Refresh mutable scheduling
-			// state, but do not repeat policy/objective already in the inherited prompt.
-			const content = ctx.getSystemPrompt?.().includes(`[PI GOAL ACTIVE goalId=${goal.id}]`)
-				? `[CURRENT EXECUTION STATE goalId=${goal.id}]\nStatus: ${goal.status}; autoContinue: ${goal.autoContinue}.\n${schedulerSummary(goal.scheduler, settings.maxAutonomousRuns)}`
-				: goalPrompt(goal, settings);
-			const live = { role: "custom" as const, customType: "pi-goal-live-context", content, display: false, timestamp: Date.now() };
-			return { messages: [live, ...(messages ?? event.messages)] as typeof event.messages };
+		const content = liveContent = currentGoalContext(ctx);
+		if (content) {
+			const live = { role: "custom" as const, customType: "pi-goal-live-context", content, display: false, timestamp: 0 };
+			return { messages: [...(messages ?? event.messages), live] as typeof event.messages };
 		}
 		return messages === null ? undefined : { messages: messages as typeof event.messages };
 	});
@@ -343,16 +315,9 @@ export function registerGoalEvents(core: GoalCore): void {
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		core.scheduler.prepare();
 		core.advanceTurnSeq();
   if (!hasActiveDraft(core)) core.installGoalToolProfile(!loadGoalSettings(ctx.cwd).disableTasks);
-		const currentSystemPrompt = () => ctx.getSystemPrompt?.() || event.systemPrompt;
 		const incomingGoalId = extractGoalIdFromInjectedMessage(event.prompt ?? "");
-		// Several prompt enrichments may need the same ledger snapshot. Keep one
-		// local read for this hook instead of repeatedly traversing the cached
-		// ledger when rejection and post-compaction steering overlap.
-		let promptLedger: ReturnType<typeof readGoalLedger> | undefined;
-		const getPromptLedger = () => promptLedger ??= { events: core.state.goal ? goalRuntimeEvents(ctx, core.state.goal.id) : [], malformed: 0 };
 
 		// If this turn was triggered by a hidden goal checkpoint that no longer
 		// matches the active goal, abort the whole turn instead of letting the
@@ -371,9 +336,7 @@ export function registerGoalEvents(core: GoalCore): void {
 					ctx.abort?.();
 				} catch {}
 				core.updateUI(ctx);
-				return {
-					systemPrompt: `${currentSystemPrompt()}\n\n${staleContinuationPrompt(incomingGoalId, core.state.goal)}`,
-				};
+				return;
 			}
 			core.runtime.setCheckpoint(null);
 		} else {
@@ -385,22 +348,29 @@ export function registerGoalEvents(core: GoalCore): void {
 			networkErrorRecoveryAfterSettleFor = null;
 		}
 
+		core.reconcileFocusedGoalFromDisk(ctx);
+		core.runningGoalId = core.state.goal?.status === "active" ? core.state.goal.id : null;
+	});
+
+	/** Request-only state: no live counters, focus, or reminders enter the system prefix. */
+	function currentGoalContext(ctx: ExtensionContext): string | undefined {
+		const checkpoint = core.runtime.getCheckpointGoalId();
+		if (checkpoint !== null && !core.isActionableContinuationGoal(checkpoint)) {
+			return staleContinuationPrompt(checkpoint, core.state.goal);
+		}
+		// Several prompt enrichments may need the same ledger snapshot. Keep one
+		// local read for this hook instead of repeatedly traversing the cached
+		// ledger when rejection and post-compaction steering overlap.
+		let promptLedger: ReturnType<typeof readGoalLedger> | undefined;
+		const getPromptLedger = () => promptLedger ??= { events: core.state.goal ? goalRuntimeEvents(ctx, core.state.goal.id) : [], malformed: 0 };
+
 		if (!core.state.goal) {
-			core.runningGoalId = null;
 			const openCount = otherOpenGoalCount(core.goalsById, null);
 			if (openCount > 0) {
-				return { systemPrompt: `${currentSystemPrompt()}\n\n${unfocusedOpenGoalsPrompt(openCount)}` };
+				return unfocusedOpenGoalsPrompt(openCount);
 			}
 			return;
 		}
-		core.reconcileFocusedGoalFromDisk(ctx);
-		if (!core.state.goal) {
-			core.runningGoalId = null;
-			const openCount = otherOpenGoalCount(core.goalsById, null);
-			if (openCount > 0) return { systemPrompt: `${currentSystemPrompt()}\n\n${unfocusedOpenGoalsPrompt(openCount)}` };
-			return;
-		}
-		core.runningGoalId = core.state.goal.status === "active" ? core.state.goal.id : null;
 		if (core.state.goal.status === "complete") return;
 		if (core.state.goal.status === "paused") {
 			const current = core.state.goal;
@@ -421,9 +391,7 @@ export function registerGoalEvents(core: GoalCore): void {
 			} catch {
 				// Ledger read failure should not break the prompt
 			}
-			return {
-				systemPrompt: `${currentSystemPrompt()}\n\n[PI GOAL PAUSED goalId=${current.id}]\n${untrustedObjectiveBlock(current)}${pauseExtras.join("\n")}${auditorExtra}\n\nThe goal is paused. Do not autonomously continue substantive work unless the user resumes it with /goal-resume. If the user explicitly asks to finish the paused goal and the objective is already satisfied based on available evidence, you may call update_goal({status: "complete"}). To abandon a goal, the user runs /goal-clear. Do not report the goal blocked in response to a pause.`,
-			};
+			return `[PI GOAL PAUSED goalId=${current.id}]\n${untrustedObjectiveBlock(current)}${pauseExtras.join("\n")}${auditorExtra}\n\nThe goal is paused. Do not autonomously continue substantive work unless the user resumes it with /goal-resume. If the user explicitly asks to finish the paused goal and the objective is already satisfied based on available evidence, you may call update_goal({status: "complete"}). To abandon a goal, the user runs /goal-clear. Do not report the goal blocked in response to a pause.`;
 		}
 		// Token-budget-limited goals get one-time wrap-up steering: summarize,
 		// do not start new substantive work, never claim completion unless real.
@@ -440,13 +408,11 @@ export function registerGoalEvents(core: GoalCore): void {
 			const reminder = core.runtime.consumePostBudgetReminder()
 				? `\n\n[TOKEN BUDGET REACHED goalId=${limitedGoal.id}]\nThe goal's token budget has been reached${budgetText ? ` (${budgetText}${balanceText})` : ""}. Wrap up the current work in one final response: summarize what was accomplished and what remains, do not start new substantive work, and do not claim the goal is complete unless it actually is. To continue, the user must raise or remove the budget and resume the goal.`
 				: "";
-			return {
-				systemPrompt: `${currentSystemPrompt()}\n\n[PI GOAL BUDGET LIMITED goalId=${limitedGoal.id}]\n${untrustedObjectiveBlock(limitedGoal)}${budgetText ? `\n${budgetText}` : ""}${reminder}`,
-			};
+			return `[PI GOAL BUDGET LIMITED goalId=${limitedGoal.id}]\n${untrustedObjectiveBlock(limitedGoal)}${budgetText ? `\n${budgetText}` : ""}${reminder}`;
 		}
   if (core.state.goal.status === "blocked") {
    const blocked = core.state.goal;
-   return {systemPrompt: `${currentSystemPrompt()}\n\n[PI GOAL BLOCKED goalId=${blocked.id}]\n${untrustedObjectiveBlock(blocked)}\nBlocker: ${blocked.pauseReason ?? "unspecified"}\nThe goal is blocked; the user must run /goal-resume before goal work continues.`};
+   return `[PI GOAL BLOCKED goalId=${blocked.id}]\n${untrustedObjectiveBlock(blocked)}\nBlocker: ${blocked.pauseReason ?? "unspecified"}\nThe goal is blocked; the user must run /goal-resume before goal work continues.`;
   }
 		const activeGoal = core.state.goal;
 		const settings = loadGoalSettings(ctx.cwd);
@@ -466,7 +432,7 @@ export function registerGoalEvents(core: GoalCore): void {
 		}
 		if (core.runtime.isPostCompactReminderPending() && shouldInjectPostCompactReminder({ pending: true, goal: activeGoal })) {
 			core.runtime.clearPostCompactReminder();
-			// PR E §62: post-compaction DELTA — the active system goal block already
+			// PR E §62: post-compaction DELTA — the current goal block already
 			// carries objective/policy/task gate/contract; inject only what
 			// compaction may have lost. Falls back to a generic note on ledger
 			// read failure.
@@ -479,8 +445,8 @@ export function registerGoalEvents(core: GoalCore): void {
 				prompt = `${prompt}\n\n[POST-COMPACTION RESYNC goalId=${core.state.goal.id}]\nThe conversation was just compacted. Re-read the objective and continue from the actual artifacts/state; do not rely on memory of the prior chat.`;
 			}
 		}
-		return { systemPrompt: `${currentSystemPrompt()}\n\n${prompt}` };
-	});
+		return prompt;
+	}
 
 	pi.on("agent_end", async (event, ctx) => {
 		const endedGoalId = core.runningGoalId;

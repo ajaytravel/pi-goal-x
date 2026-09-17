@@ -19,7 +19,7 @@ handlers from their dedicated modules:
 | `goal-task-tools.ts` | `set_goal_tasks` / `update_goal_task` executors plus flat parent-linked conversion, id-stable merge, `countTasks` |
 | `goal-task-confirmation.ts` | Task-only result boundary (`{decision}`, no auditor toggle) with neutral Confirm task list / Keep current tasks labels |
 | `goal-commands.ts` | The curated fourteen-command palette and its handlers |
-| `goal-events.ts` | The 14 lifecycle event handlers (`context`, `turn_start`, `tool_call`, `tool_execution_end`, `turn_end`, `message_end`, `session_start`, `session_before_compact`, `session_compact`, `session_tree`, `before_agent_start`, `agent_end`, `agent_settled`, `session_shutdown`) |
+| `goal-events.ts` | Lifecycle and provider event handlers (`context`, `before_provider_request`, `turn_start`, `tool_call`, `tool_execution_end`, `turn_end`, `message_end`, `session_start`, `session_before_compact`, `session_compact`, `session_tree`, `before_agent_start`, `agent_end`, `agent_settled`, `session_shutdown`) |
 | `goal-widget.ts` | Terminal input keybindings (Esc pause / abort-audit, Ctrl+Shift+T overlay) and the hidden debug helpers |
 | `goal-format.ts` | Pure formatting/message-introspection helpers and renderers |
 | `goal-service.ts` | `GoalService` — the sole mutation boundary: ordered reconcile → id/focus-revision validation → clone-mutate → write/archive → ledger → memory commit → returned effects |
@@ -341,3 +341,5 @@ operable; `/goal-clear` confirms; task confirmation uses neutral labels;
 completion commits are failure-checked; and cross-process mutations are
 serialized with persisted revisions plus per-goal filesystem locks that
 return typed conflicts to stale writers instead of overwriting blindly.
+
+Prompt layout and explicit provider cache handling are documented in [prompt caching](prompt-caching.md). Live goal state is constructed in the context hook; before_agent_start performs lifecycle preflight without modifying the system prompt.
