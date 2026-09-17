@@ -4,6 +4,8 @@ All notable changes to pi-goal-x are documented here.
 
 ## [Unreleased]
 
+## [0.31.6] — 2026-09-17
+
 ### Fixed
 
 - Preserve prompt-cache prefixes across normal turns, checkpoints, and tool loops (#67): move live goal state out of the system/history prefix, keep bounded checkpoint markers in place, and place existing Anthropic/Bedrock cache breakpoints before transient state. Provider cache settings remain unchanged.
