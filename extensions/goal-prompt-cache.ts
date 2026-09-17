@@ -7,16 +7,36 @@ import { asRecord } from "./goal-record.ts";
  * Implicit caches and cacheRetention=none have no marker and are untouched.
  * Reuse the provider's TTL and marker count rather than enabling caching here.
  */
+/**
+ * Index of the last message that carries content. A host may append a
+ * contentless trailing message when it serializes the request (Pi 0.85.1 does
+ * this on the claude-opus-5 payload, as `{role: "system", content: []}`). Such
+ * a message can neither hold a breakpoint nor change the cached prefix, so the
+ * repair has to look past it instead of abandoning the whole conversation to
+ * the volatile tail.
+ */
+function tailMessageIndex(messages: readonly unknown[]): number {
+ for (let i = messages.length - 1; i >= 0; i--) {
+  const content = asRecord(messages[i])?.content;
+  const empty = content === null || content === undefined
+   || (typeof content === "string" && content.length === 0)
+   || (Array.isArray(content) && content.length === 0);
+  if (!empty) return i;
+ }
+ return -1;
+}
+
 export function cacheGoalHistory(payload: unknown, liveContent: string | undefined): unknown {
  const root = asRecord(payload);
  if (!liveContent || !Array.isArray(root?.messages)) return undefined;
  const messages = root.messages;
- const last = asRecord(messages.at(-1));
+ const lastIndex = tailMessageIndex(messages);
+ const last = asRecord(messages[lastIndex]);
  if (last?.role !== "user" || !Array.isArray(last.content)) return undefined;
  // Bedrock represents its breakpoint as a separate content block.
  const bedrockPoint = asRecord(last.content.at(-1));
  if (asRecord(bedrockPoint?.cachePoint) && asRecord(last.content.at(-2))?.text === liveContent) {
-  for (let i = messages.length - 2; i >= 0; i--) {
+  for (let i = lastIndex - 1; i >= 0; i--) {
    const previous = asRecord(messages[i]);
    if (!Array.isArray(previous?.content) || previous.content.length === 0) continue;
    if (!previous.content.some(block => asRecord(block)?.cachePoint)) previous.content.push(bedrockPoint);
@@ -27,7 +47,7 @@ export function cacheGoalHistory(payload: unknown, liveContent: string | undefin
  }
  const tail = asRecord(last.content.at(-1));
  if (tail?.type !== "text" || tail.text !== liveContent || !asRecord(tail.cache_control)) return undefined;
- for (let i = messages.length - 1; i >= 0; i--) {
+ for (let i = lastIndex; i >= 0; i--) {
   const message = asRecord(messages[i]);
   if (!message || !["user", "assistant", "tool"].includes(String(message.role))) continue;
   if (typeof message.content === "string" && message.content.length > 0) {

@@ -30,6 +30,41 @@ test("implicit caches, disabled caching, unknown payloads and another extension'
  }
 });
 
+test("a contentless trailing message from the host does not defeat the repair", () => {
+ // Pi 0.85.1 appends {role: "system", content: []} on the claude-opus-5
+ // payload. Before this was tolerated the breakpoint stayed on the live
+ // block, so only the system prompt was ever reusable.
+ const payload: any = {messages: [
+  {role: "user", content: [{type: "text", text: "history"}]},
+  {role: "user", content: [{type: "text", text: live, cache_control: control}]},
+  {role: "system", content: []},
+ ]};
+ assert.equal(cacheGoalHistory(payload, live), payload);
+ assert.deepEqual(payload.messages[0].content[0].cache_control, control);
+ assert.equal(payload.messages[1].content[0].cache_control, undefined);
+ assert.deepEqual(payload.messages[2], {role: "system", content: []});
+
+ const bedrock: any = {messages: [
+  {role: "user", content: [{text: "history"}]},
+  {role: "user", content: [{text: live}, {cachePoint: {type: "default", ttl: "1h"}}]},
+  {role: "system", content: []},
+ ]};
+ cacheGoalHistory(bedrock, live);
+ assert.deepEqual(bedrock.messages[0].content.at(-1), {cachePoint: {type: "default", ttl: "1h"}});
+ assert.deepEqual(bedrock.messages[1].content, [{text: live}]);
+
+ // A trailing message that does carry content is still another extension's
+ // business: the tail no longer matches the live block, so nothing moves.
+ const foreign: any = {messages: [
+  {role: "user", content: [{type: "text", text: "history"}]},
+  {role: "user", content: [{type: "text", text: live, cache_control: control}]},
+  {role: "user", content: [{type: "text", text: "another extension"}]},
+ ]};
+ const before = structuredClone(foreign);
+ assert.equal(cacheGoalHistory(foreign, live), undefined);
+ assert.deepEqual(foreign, before);
+});
+
 test("Bedrock moves its existing cachePoint before the live message", () => {
  const payload: any = {messages: [{role: "user", content: [{text: "history"}]}, {role: "user", content: [{text: live}, {cachePoint: {type: "default", ttl: "1h"}}]}]};
  cacheGoalHistory(payload, live);
