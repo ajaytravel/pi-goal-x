@@ -33,6 +33,14 @@
       "rank": 7,
       "extensions": 3352,
       "downloads": 68685
+    },
+    {
+      "release": "v0.31.6",
+      "date": "2026-09-17",
+      "source": "https://pi.dev/packages?type=extension",
+      "rank": 7,
+      "extensions": 3318,
+      "downloads": 68685
     }
   ]
 }

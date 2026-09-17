@@ -6,7 +6,7 @@
   <a href="https://pi.dev/packages?type=extension" target="_blank" rel="noopener noreferrer">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="assets/badge-dark.svg">
-      <img src="assets/badge-light.svg" alt="TOP 0.3% of Pi coding agent extensions: #7 of 3,352 by downloads · Sep 16, 2026 (best recorded rank)" width="480">
+      <img src="assets/badge-light.svg" alt="TOP 0.3% of Pi coding agent extensions: #7 of 3,318 by downloads · Sep 17, 2026 (best recorded rank)" width="480">
     </picture>
   </a>
 </div>
