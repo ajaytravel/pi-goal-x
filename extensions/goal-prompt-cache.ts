@@ -1,11 +1,12 @@
 import { asRecord } from "./goal-record.ts";
 
 /**
- * Index of the last message that carries content. A host may append a
- * contentless message when it serializes a request: Pi 0.85.1 adds
- * `{role: "system", content: []}` to every payload carrying `output_config`.
- * Such a message holds no breakpoint and changes no prefix, so look past it
- * rather than surrender the conversation to the volatile tail.
+ * Index of the last message that carries content. Pi's persistent-effort
+ * support (`supportsMidConvoEffort`) appends an effort-only marker,
+ * `{role: "system", content: [], output_config: {effort}}`, after the message
+ * it has already marked for caching. A contentless message holds no
+ * breakpoint and changes no prefix, so look past it rather than surrender the
+ * conversation to the volatile tail.
  */
 function tailMessageIndex(messages: readonly unknown[]): number {
  for (let i = messages.length - 1; i >= 0; i--) {
