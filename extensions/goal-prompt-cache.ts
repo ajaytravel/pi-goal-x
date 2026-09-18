@@ -23,25 +23,6 @@ function tailMessageIndex(messages: readonly unknown[]): number {
  * Implicit caches and cacheRetention=none have no marker and are untouched.
  * Reuse the provider's TTL and marker count rather than enabling caching here.
  */
-/**
- * Index of the last message that carries content. A host may append a
- * contentless trailing message when it serializes the request (Pi 0.85.1 does
- * this on the claude-opus-5 payload, as `{role: "system", content: []}`). Such
- * a message can neither hold a breakpoint nor change the cached prefix, so the
- * repair has to look past it instead of abandoning the whole conversation to
- * the volatile tail.
- */
-function tailMessageIndex(messages: readonly unknown[]): number {
- for (let i = messages.length - 1; i >= 0; i--) {
-  const content = asRecord(messages[i])?.content;
-  const empty = content === null || content === undefined
-   || (typeof content === "string" && content.length === 0)
-   || (Array.isArray(content) && content.length === 0);
-  if (!empty) return i;
- }
- return -1;
-}
-
 export function cacheGoalHistory(payload: unknown, liveContent: string | undefined): unknown {
  const root = asRecord(payload);
  if (!liveContent || !Array.isArray(root?.messages)) return undefined;
