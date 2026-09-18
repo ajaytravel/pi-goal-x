@@ -4,6 +4,10 @@ All notable changes to pi-goal-x are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Relocate the cache breakpoint on hosts that append a payload suffix (#67 follow-up): `cacheGoalHistory` resolved the live-state message with `messages.at(-1)`, so Pi 0.85.1's trailing `{role: "system", content: []}` on payloads carrying `output_config` disabled the move and left the breakpoint on state rewritten every request. Relocation now keys on the last message carrying content. Implicit caching, disabled caching, and a content-bearing trailing message from another extension remain untouched.
+
 ## [0.31.6] — 2026-09-17
 
 ### Fixed

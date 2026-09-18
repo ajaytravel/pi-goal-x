@@ -1,6 +1,22 @@
 import { asRecord } from "./goal-record.ts";
 
 /**
+ * Index of the last message that carries content. A host may append a
+ * contentless message when it serializes a request: Pi 0.85.1 adds
+ * `{role: "system", content: []}` to every payload carrying `output_config`.
+ * Such a message holds no breakpoint and changes no prefix, so look past it
+ * rather than surrender the conversation to the volatile tail.
+ */
+function tailMessageIndex(messages: readonly unknown[]): number {
+ for (let i = messages.length - 1; i >= 0; i--) {
+  const content = asRecord(messages[i])?.content;
+  const hasContent = typeof content === "string" || Array.isArray(content) ? content.length > 0 : content !== null && content !== undefined;
+  if (hasContent) return i;
+ }
+ return -1;
+}
+
+/**
  * Pi marks the final user block for explicit caching. Our request-only state
  * never enters history, so that block cannot be reused on the next request.
  * Move that existing breakpoint to the preceding cacheable history block.

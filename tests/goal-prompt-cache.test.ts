@@ -31,8 +31,8 @@ test("implicit caches, disabled caching, unknown payloads and another extension'
 });
 
 test("a contentless trailing message from the host does not defeat the repair", () => {
- // Pi 0.85.1 appends {role: "system", content: []} on the claude-opus-5
- // payload. Before this was tolerated the breakpoint stayed on the live
+ // Pi 0.85.1 appends {role: "system", content: []} to payloads carrying
+ // output_config. Until that was tolerated the breakpoint stayed on the live
  // block, so only the system prompt was ever reusable.
  const payload: any = {messages: [
   {role: "user", content: [{type: "text", text: "history"}]},
