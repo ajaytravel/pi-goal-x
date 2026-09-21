@@ -228,10 +228,19 @@ function retainedTaskChars(task: GoalTask): number {
   + (task.skipReason?.length ?? 0) + (task.subtasks?.reduce((n, child) => n + retainedTaskChars(child), 0) ?? 0);
 }
 
+export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings): { state: string; counters: string } {
+	// The policy block changes only when the goal itself changes; the counters
+	// change nearly every turn. Splitting them lets request-only injection retain
+	// each at its own rate so consecutive provider requests stay prefix-stable.
+	const state = cachedPrompt(goal, settings, "goal", () => buildGoalPrompt(goal, settings));
+	const budget = budgetLine(goal);
+	const counters = `Usage: ${formatUsage(goal)}${budget ? `\n${budget}` : ""}\n${schedulerSummary(goal.scheduler, settings?.maxAutonomousRuns)}`;
+	return { state, counters };
+}
+
 export function goalPrompt(goal: GoalRecord, settings?: GoalSettings): string {
-	const fixed = cachedPrompt(goal, settings, "goal", () => buildGoalPrompt(goal, settings));
- const budget = budgetLine(goal);
- return `${fixed}\nUsage: ${formatUsage(goal)}${budget ? `\n${budget}` : ""}\n${schedulerSummary(goal.scheduler, settings?.maxAutonomousRuns)}`;
+	const { state, counters } = goalPromptParts(goal, settings);
+	return `${state}\n${counters}`;
 }
 
 function buildGoalPrompt(goal: GoalRecord, settings?: GoalSettings): string {

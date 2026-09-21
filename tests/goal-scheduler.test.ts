@@ -470,30 +470,41 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
  const preflight = await h.handlers.before_agent_start!({prompt: "continue", systemPrompt: "host policy"}, h.ctx);
  assert.equal(preflight, undefined, "goal state never rewrites the system prefix");
  const first = await request();
- assert.deepEqual(first.slice(0, -1), original);
- assert.match(first.at(-1).content, /PI GOAL ACTIVE/);
- const wire: any = {messages: [{role: "user", content: "Work on the goal"}, {role: "user", content: [{type: "text", text: first.at(-1).content, cache_control: {type: "ephemeral"}}]}]};
+ assert.deepEqual(first.slice(0, -2), original, "stable policy and volatile counters ride as two request-only tails");
+ assert.equal(first.filter((m: any) => m.customType === "pi-goal-live-context").length, 2);
+ assert.match(first.at(-2).content, /PI GOAL ACTIVE/);
+ assert.match(first.at(-1).content, /Usage:/);
+ const wire: any = {messages: [{role: "user", content: "Work on the goal"}, {role: "user", content: [{type: "text", text: first.at(-2).content}]}, {role: "user", content: [{type: "text", text: first.at(-1).content, cache_control: {type: "ephemeral"}}]}]};
  await h.handlers.before_provider_request!({payload: wire}, h.ctx);
  assert.equal(wire.messages[0].content[0].cache_control.type, "ephemeral", "registered provider hook places the breakpoint on history");
- assert.equal(wire.messages[1].content[0].cache_control, undefined);
+ assert.equal(wire.messages[1].content[0].cache_control, undefined, "stable tail is transient");
+ assert.equal(wire.messages[2].content[0].cache_control, undefined, "volatile tail is transient");
  h.core.state.goal!.usage.tokensUsed = 12345;
- h.core.state.goal!.objective = "Changed objective";
  h.core.state.goal!.scheduler = { ...newGoalScheduler("owner"), used: 7 };
  const toolCall = {role: "assistant", content: [{type: "toolCall", id: "call-1", name: "read", arguments: {path: "README.md"}}], timestamp: 2};
  const toolResult = {role: "toolResult", toolCallId: "call-1", toolName: "read", content: [{type: "text", text: "file contents"}], isError: false, timestamp: 3};
  history.push(toolCall, toolResult);
  const second = await request();
- assert.deepEqual(second.slice(0, -1), history, "tool call and result stay adjacent");
- assert.deepEqual(second.slice(0, original.length), first.slice(0, -1));
+ assert.deepEqual(second.slice(0, first.length), first, "the advanced request literally extends the previous one");
+ assert.deepEqual(second.slice(3, 5), [toolCall, toolResult], "tool call and result stay adjacent");
+ assert.match(second[1].content, /PI GOAL ACTIVE/);
+ assert.equal(second.filter((m: any) => m.customType === "pi-goal-live-context").length, 3, "changed counters append one small tail; the policy block is retained, not resent");
  assert.match(second.at(-1).content, /12345 tokens/);
- assert.match(second.at(-1).content, /Changed objective/);
  assert.match(second.at(-1).content, /7\/unlimited/);
+ // An objective edit changes the stable policy block: retention resets once so no
+ // stale objective lingers mid-history, and the fresh pair anchors the new prefix.
+ h.core.state.goal!.objective = "Changed objective";
+ const third = await request();
+ assert.equal(third.filter((m: any) => m.customType === "pi-goal-live-context").length, 2);
+ assert.deepEqual(third.slice(0, 3), history);
+ assert.match(third.at(-2).content, /Changed objective/);
+ assert.match(third.at(-1).content, /Usage:/);
  h.core.scheduler.begin(h.ctx); // Custom-message run bypassing preflight.
  for (let i = 0; i < 4; i++) {
   history.push({role: "custom", customType: "pi-goal-event", content: "legacy full prompt", details: {goalId: h.core.state.goal!.id, kind: "checkpoint"}, timestamp: i + 4});
   const current = await request();
-  assert.deepEqual(current.slice(0, second.length - 1), second.slice(0, -1));
-  assert.equal(current.filter((m: any) => m.customType === "pi-goal-live-context").length, 1);
+  assert.deepEqual(current.slice(0, third.length - 1), third.slice(0, -1));
+  assert.equal(current.filter((m: any) => m.customType === "pi-goal-live-context").length, 2, "retained tails are re-sent in place, never duplicated per request");
   const before = current.slice(0, -1);
   const again = await request();
   assert.deepEqual(again.slice(0, -1), before);

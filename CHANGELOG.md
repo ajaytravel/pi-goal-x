@@ -4,6 +4,10 @@ All notable changes to pi-goal-x are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Implicit prompt-cache prefix across advancing turns: request-only goal state is now injected as a stable policy tail plus a volatile counters tail, and previously sent tails are retained verbatim at their anchors so each provider request extends the previous one. OpenAI Responses / Chat Completions reuse the full prefix instead of freezing at the first injection point. Unchanged content appends nothing; a stable-state change, a rewritten history, or the 32-tail window performs one documented reset. Explicit Anthropic/Bedrock breakpoint relocation now skips every transient tail. Provider cache settings remain unchanged.
+
 ## [0.31.6] — 2026-09-17
 
 ### Fixed

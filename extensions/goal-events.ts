@@ -22,8 +22,10 @@ import { asRecord, nowIso, type AssistantMessageLike, type GoalRecord } from "./
 import { goalSelectorLabel, otherOpenGoalCount } from "./goal-pool.ts";
 import { invalidateGoalPoolCache } from "./storage/goal-files.ts";
 import { checkpointTriggerPrompt } from "./prompts/goal-prompts.ts";
-import { consumeOracleFollowupMarker, hasPendingOracleAdviceForFocusedGoal } from "./goal-oracle.ts";import {
-	goalPrompt,
+import { consumeOracleFollowupMarker, hasPendingOracleAdviceForFocusedGoal } from "./goal-oracle.ts";
+import { LiveTailRetention } from "./goal-live-retention.ts";
+import {
+	goalPromptParts,
 	staleContinuationPrompt,
 	unfocusedOpenGoalsPrompt,
 	untrustedObjectiveBlock,
@@ -60,19 +62,28 @@ export function compactGoalCheckpointContext(
  */
 export function registerGoalEvents(core: GoalCore): void {
 	const { pi } = core;
-	let liveContent: string | undefined;
-	pi.on("before_provider_request", event => cacheGoalHistory(event.payload, liveContent));
+	let liveTransient: string[] | undefined;
+	const liveRetention = new LiveTailRetention();
+	pi.on("before_provider_request", event => cacheGoalHistory(event.payload, liveTransient));
 	let continuationAfterSettleFor: string | null = null;
 	let networkErrorRecoveryAfterSettleFor: string | null = null;
 
 	pi.on("context", async (event, ctx) => {
 		const filtered = filterGoalSessionContext(event.messages);
 		const messages = compactGoalCheckpointContext(filtered ?? event.messages, core.state.goal) ?? filtered;
-		const content = liveContent = currentGoalContext(ctx);
-		if (content) {
-			const live = { role: "custom" as const, customType: "pi-goal-live-context", content, display: false, timestamp: 0 };
-			return { messages: [...(messages ?? event.messages), live] as typeof event.messages };
+		const base = messages ?? event.messages;
+		const sessionKey = ctx.sessionManager.getSessionId?.() ?? "default";
+		const parts = currentGoalContextParts(ctx);
+		if (parts) {
+			// Retain previously sent tails verbatim at their anchors so this
+			// request extends the previous one instead of displacing its tail.
+			// Only genuinely new state/counters content is appended.
+			const { messages: retained, transientContents } = liveRetention.apply(sessionKey, base, { state: parts.state, counters: parts.counters });
+			liveTransient = transientContents;
+			return { messages: retained as typeof event.messages };
 		}
+		liveTransient = undefined;
+		liveRetention.clear(sessionKey);
 		return messages === null ? undefined : { messages: messages as typeof event.messages };
 	});
 
@@ -353,10 +364,11 @@ export function registerGoalEvents(core: GoalCore): void {
 	});
 
 	/** Request-only state: no live counters, focus, or reminders enter the system prefix. */
-	function currentGoalContext(ctx: ExtensionContext): string | undefined {
+	/** Request-only goal state split into a rarely-changing policy block and per-turn counters. Other branches are stable-only. */
+	function currentGoalContextParts(ctx: ExtensionContext): { state: string; counters?: string } | undefined {
 		const checkpoint = core.runtime.getCheckpointGoalId();
 		if (checkpoint !== null && !core.isActionableContinuationGoal(checkpoint)) {
-			return staleContinuationPrompt(checkpoint, core.state.goal);
+			return { state: staleContinuationPrompt(checkpoint, core.state.goal) };
 		}
 		// Several prompt enrichments may need the same ledger snapshot. Keep one
 		// local read for this hook instead of repeatedly traversing the cached
@@ -367,7 +379,7 @@ export function registerGoalEvents(core: GoalCore): void {
 		if (!core.state.goal) {
 			const openCount = otherOpenGoalCount(core.goalsById, null);
 			if (openCount > 0) {
-				return unfocusedOpenGoalsPrompt(openCount);
+				return { state: unfocusedOpenGoalsPrompt(openCount) };
 			}
 			return;
 		}
@@ -391,7 +403,7 @@ export function registerGoalEvents(core: GoalCore): void {
 			} catch {
 				// Ledger read failure should not break the prompt
 			}
-			return `[PI GOAL PAUSED goalId=${current.id}]\n${untrustedObjectiveBlock(current)}${pauseExtras.join("\n")}${auditorExtra}\n\nThe goal is paused. Do not autonomously continue substantive work unless the user resumes it with /goal-resume. If the user explicitly asks to finish the paused goal and the objective is already satisfied based on available evidence, you may call update_goal({status: "complete"}). To abandon a goal, the user runs /goal-clear. Do not report the goal blocked in response to a pause.`;
+		return { state: `[PI GOAL PAUSED goalId=${current.id}]\n${untrustedObjectiveBlock(current)}${pauseExtras.join("\n")}${auditorExtra}\n\nThe goal is paused. Do not autonomously continue substantive work unless the user resumes it with /goal-resume. If the user explicitly asks to finish the paused goal and the objective is already satisfied based on available evidence, you may call update_goal({status: "complete"}). To abandon a goal, the user runs /goal-clear. Do not report the goal blocked in response to a pause.` };
 		}
 		// Token-budget-limited goals get one-time wrap-up steering: summarize,
 		// do not start new substantive work, never claim completion unless real.
@@ -408,24 +420,27 @@ export function registerGoalEvents(core: GoalCore): void {
 			const reminder = core.runtime.consumePostBudgetReminder()
 				? `\n\n[TOKEN BUDGET REACHED goalId=${limitedGoal.id}]\nThe goal's token budget has been reached${budgetText ? ` (${budgetText}${balanceText})` : ""}. Wrap up the current work in one final response: summarize what was accomplished and what remains, do not start new substantive work, and do not claim the goal is complete unless it actually is. To continue, the user must raise or remove the budget and resume the goal.`
 				: "";
-			return `[PI GOAL BUDGET LIMITED goalId=${limitedGoal.id}]\n${untrustedObjectiveBlock(limitedGoal)}${budgetText ? `\n${budgetText}` : ""}${reminder}`;
+		return { state: `[PI GOAL BUDGET LIMITED goalId=${limitedGoal.id}]\n${untrustedObjectiveBlock(limitedGoal)}${budgetText ? `\n${budgetText}` : ""}${reminder}` };
 		}
   if (core.state.goal.status === "blocked") {
    const blocked = core.state.goal;
-   return `[PI GOAL BLOCKED goalId=${blocked.id}]\n${untrustedObjectiveBlock(blocked)}\nBlocker: ${blocked.pauseReason ?? "unspecified"}\nThe goal is blocked; the user must run /goal-resume before goal work continues.`;
+   return { state: `[PI GOAL BLOCKED goalId=${blocked.id}]\n${untrustedObjectiveBlock(blocked)}\nBlocker: ${blocked.pauseReason ?? "unspecified"}\nThe goal is blocked; the user must run /goal-resume before goal work continues.` };
   }
 		const activeGoal = core.state.goal;
 		const settings = loadGoalSettings(ctx.cwd);
-		let prompt = goalPrompt(activeGoal, settings);
+		const { state: policy, counters } = goalPromptParts(activeGoal, settings);
+		// Rare transitional steering rides in the stable block; per-turn usage and
+		// scheduling counters stay in the volatile block so retention grows slowly.
+		let state = policy;
 		// F5: [GOAL STALLED] steering note when the detector fired.
 		const stalledNote = core.checkStall(ctx);
-		if (stalledNote) prompt += stalledNote;
+		if (stalledNote) state += stalledNote;
 		// Inject durable auditor feedback if the latest result was a rejection
 		try {
 			const ledger = getPromptLedger();
 			const auditorResult = latestAuditorResultForGoal(ledger.events, activeGoal.id);
 			if (auditorResult && auditorResult.verdict === "disapproved" && ledger.events.some((e) => e.type === "completion_requested" && e.goalId === activeGoal.id)) {
-				prompt = `${prompt}\n\n[AUDITOR REJECTION goalId=${activeGoal.id}]\nAn independent auditor previously rejected a completion request for this goal. Reason: ${auditorResult.report.slice(0, 300)}\nAddress the auditor's objections before requesting completion again.`;
+				state = `${state}\n\n[AUDITOR REJECTION goalId=${activeGoal.id}]\nAn independent auditor previously rejected a completion request for this goal. Reason: ${auditorResult.report.slice(0, 300)}\nAddress the auditor's objections before requesting completion again.`;
 			}
 		} catch {
 			// Ledger read failure should not break the prompt
@@ -440,12 +455,12 @@ export function registerGoalEvents(core: GoalCore): void {
 				const ledger = getPromptLedger();
 				const otherOpenCount = core.openGoals().filter((g) => g.id !== activeGoal.id).length;
 				const delta = buildPostCompactionGoalDelta({ goal: activeGoal, ledgerEvents: ledger.events, otherOpenCount });
-				prompt = `${prompt}\n\n${delta}`;
+				state = `${state}\n\n${delta}`;
 			} catch {
-				prompt = `${prompt}\n\n[POST-COMPACTION RESYNC goalId=${core.state.goal.id}]\nThe conversation was just compacted. Re-read the objective and continue from the actual artifacts/state; do not rely on memory of the prior chat.`;
+				state = `${state}\n\n[POST-COMPACTION RESYNC goalId=${core.state.goal.id}]\nThe conversation was just compacted. Re-read the objective and continue from the actual artifacts/state; do not rely on memory of the prior chat.`;
 			}
 		}
-		return prompt;
+		return { state, counters };
 	}
 
 	pi.on("agent_end", async (event, ctx) => {
