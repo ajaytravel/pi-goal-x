@@ -517,3 +517,31 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
   assert.doesNotMatch(stopped.at(-1).content, /PI GOAL ACTIVE/);
  }
 });
+
+test("prompt cache: interleaved sessions keep per-session transient sets", async t => {
+	const h = await fixture(t);
+	const history: any[] = [{role: "user", content: "Work on the goal", timestamp: 1}];
+	const ctxB = {...h.ctx, sessionManager: {...h.ctx.sessionManager, getSessionId: () => "owner-B"}} as unknown as ExtensionContext;
+	const first: any[] = (await h.handlers.context!({messages: history}, h.ctx)).messages;
+	// Session B advances the same goal so its transient set differs from A's.
+	h.core.state.goal!.usage.tokensUsed = 12345;
+	h.core.state.goal!.scheduler = {...newGoalScheduler("owner"), used: 7};
+	await h.handlers.context!({messages: history}, ctxB);
+	const wire: any = {messages: [{role: "user", content: "Work on the goal"}, {role: "user", content: [{type: "text", text: first.at(-2).content}]}, {role: "user", content: [{type: "text", text: first.at(-1).content, cache_control: {type: "ephemeral"}}]}]};
+	await h.handlers.before_provider_request!({payload: wire}, h.ctx);
+	assert.equal(wire.messages[0].content[0].cache_control?.type, "ephemeral", "session A's request relocates with A's set even after B overwrote its own");
+	assert.equal(wire.messages[2].content[0].cache_control, undefined, "A's live tail stays transient");
+});
+
+test("prompt cache: cleared scheduling instructions vanish from retained history", async t => {
+	const h = await fixture(t);
+	const history: any[] = [{role: "user", content: "Work on the goal", timestamp: 1}];
+	h.core.state.goal!.scheduler = {...newGoalScheduler("owner"), phase: "ready", decision: {kind: "ready", purpose: "ready", nextAction: "Publish release v1"}};
+	const first: any[] = (await h.handlers.context!({messages: history}, h.ctx)).messages;
+	assert.ok(first.some((m: any) => typeof m.content === "string" && m.content.includes("Publish release v1")), "standing instruction rides the live state");
+	// Cleared by omission: a plain scheduler with no decision must not re-issue the order.
+	h.core.state.goal!.scheduler = {...newGoalScheduler("owner"), used: 1};
+	const advanced = [...history, {role: "assistant", content: "ack", timestamp: 2}];
+	const second: any[] = (await h.handlers.context!({messages: advanced}, h.ctx)).messages;
+	assert.ok(!second.some((m: any) => typeof m.content === "string" && m.content.includes("Publish release v1")), "no retained tail re-issues the cancelled order");
+});

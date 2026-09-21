@@ -62,9 +62,13 @@ export function compactGoalCheckpointContext(
  */
 export function registerGoalEvents(core: GoalCore): void {
 	const { pi } = core;
-	let liveTransient: string[] | undefined;
+	// Transients are keyed per session: the context hook of session B must never
+	// overwrite the set that session A's provider request will consume.
+	const liveTransients = new Map<string, string[] | undefined>();
 	const liveRetention = new LiveTailRetention();
-	pi.on("before_provider_request", event => cacheGoalHistory(event.payload, liveTransient));
+	const sessionKeyFor = (ctx?: ExtensionContext): string =>
+		ctx?.sessionManager?.getSessionId?.() ?? (ctx?.cwd ? `cwd:${ctx.cwd}` : "default");
+	pi.on("before_provider_request", (event, ctx) => cacheGoalHistory(event.payload, liveTransients.get(sessionKeyFor(ctx as ExtensionContext | undefined))));
 	let continuationAfterSettleFor: string | null = null;
 	let networkErrorRecoveryAfterSettleFor: string | null = null;
 
@@ -72,17 +76,17 @@ export function registerGoalEvents(core: GoalCore): void {
 		const filtered = filterGoalSessionContext(event.messages);
 		const messages = compactGoalCheckpointContext(filtered ?? event.messages, core.state.goal) ?? filtered;
 		const base = messages ?? event.messages;
-		const sessionKey = ctx.sessionManager.getSessionId?.() ?? "default";
+		const sessionKey = sessionKeyFor(ctx);
 		const parts = currentGoalContextParts(ctx);
 		if (parts) {
 			// Retain previously sent tails verbatim at their anchors so this
 			// request extends the previous one instead of displacing its tail.
 			// Only genuinely new state/counters content is appended.
 			const { messages: retained, transientContents } = liveRetention.apply(sessionKey, base, { state: parts.state, counters: parts.counters });
-			liveTransient = transientContents;
+			liveTransients.set(sessionKey, transientContents);
 			return { messages: retained as typeof event.messages };
 		}
-		liveTransient = undefined;
+		liveTransients.delete(sessionKey);
 		liveRetention.clear(sessionKey);
 		return messages === null ? undefined : { messages: messages as typeof event.messages };
 	});
@@ -557,5 +561,7 @@ export function registerGoalEvents(core: GoalCore): void {
 		core.terminalInputUnsubscribe?.();
 		core.terminalInputUnsubscribe = null;
 		if (core.state.goal) core.persist(ctx);
+		liveTransients.delete(sessionKeyFor(ctx));
+		liveRetention.clear(sessionKeyFor(ctx));
 	});
 }

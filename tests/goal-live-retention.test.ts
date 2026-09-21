@@ -113,3 +113,37 @@ test("an unchanged request near capacity keeps its prefix instead of resetting",
 	const repeat = retention.apply("s", base, { state: "S", counters: `V${MAX_RETAINED_LIVE_TAILS - 3}` }).messages;
 	assert.deepEqual(repeat, previous, "a zero-growth request appends nothing and drops nothing");
 });
+
+test("a middle-message rewrite resets even when the trailing message is identical", () => {
+	const retention = new LiveTailRetention();
+	const fresh = { state: "S", counters: "V" };
+	retention.apply("s", [msg("user", "early", 1), msg("user", "late", 2)], fresh);
+	// Same tail, same length, but the earlier message was rewritten.
+	const out = retention.apply("s", [msg("user", "edited", 1), msg("user", "late", 2)], fresh).messages;
+	const customs = out.filter((m: any) => m.role === "custom");
+	assert.equal(customs.length, 2, "full reset: only the fresh pair, no retained mid-history tails");
+	assert.deepEqual(contents(out).slice(0, 2), ["edited", "late"]);
+});
+
+test("a retained tail never lands before a wire tool-role result", () => {
+	const retention = new LiveTailRetention();
+	const user = msg("user", "Inspect", 1);
+	const callMsg: any = { role: "assistant", timestamp: 2, content: [{ type: "toolCall", id: "a", name: "read", arguments: {} }] };
+	const wireResult: any = { role: "tool", toolCallId: "a", timestamp: 3, content: [{ type: "text", text: "OK" }] };
+	const fresh = { state: "S", counters: "V" };
+	retention.apply("s", [user, callMsg, wireResult], fresh);
+	const blockResult: any = { role: "assistant", timestamp: 3, content: [{ type: "tool_result", text: "OK" }] };
+	const out = retention.apply("s", [user, callMsg, blockResult], fresh).messages;
+	const roles = out.map((m: any) => m.role);
+	assert.deepEqual(roles.slice(-2), ["custom", "custom"], "live state rides at the tail, never inside the tool pair");
+	assert.ok(!roles.slice(0, -2).includes("custom"), "no retained tail splits the rewritten tool batch");
+});
+
+test("tails anchored on empty history reset once real history arrives", () => {
+	const retention = new LiveTailRetention();
+	const fresh = { state: "S", counters: "V" };
+	const first = retention.apply("s", [], fresh).messages;
+	assert.deepEqual(contents(first), ["S", "V"]);
+	const out = retention.apply("s", [msg("user", "h", 1)], fresh).messages;
+	assert.deepEqual(contents(out), ["h", "S", "V"], "fresh tails anchor at the tail, nothing lingers at the head");
+});

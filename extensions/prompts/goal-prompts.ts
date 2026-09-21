@@ -236,7 +236,7 @@ export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings): { st
 	// omission, so a retained copy would keep issuing a cancelled order.
 	const fixed = cachedPrompt(goal, settings, "goal", () => buildGoalPrompt(goal, settings));
 	const { runs, instructions } = schedulerSummaryParts(goal.scheduler, settings?.maxAutonomousRuns);
-	const state = instructions ? `${fixed}\n\n${instructions}` : fixed;
+	const state = instructions ? `${fixed}\n${instructions}` : fixed;
 	const budget = budgetLine(goal);
 	const counters = `Usage: ${formatUsage(goal)}${budget ? `\n${budget}` : ""}\n${runs}`;
 	return { state, counters };

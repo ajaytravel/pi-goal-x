@@ -247,10 +247,9 @@ test("already-unfocused command does not abort unrelated busy work", async () =>
 	}
 });
 
-
-/** The ACTIVE goal state now spans two request-only tails (policy plus counters); match either block. */
+/** The ACTIVE goal state now spans two request-only tails (policy plus counters); match the tail pair. */
 const promptIncludes = (prompt: { messages?: { content: unknown }[] } | undefined, text: string): boolean =>
-	(prompt?.messages ?? []).some(message => typeof message.content === "string" && message.content.includes(text));
+	(prompt?.messages ?? []).slice(-2).some(message => typeof message.content === "string" && message.content.includes(text));
 
 test("one session can unfocus while another remains focused on the shared goal", async () => {
 	const fixture = createFixture();

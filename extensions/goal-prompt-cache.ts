@@ -23,7 +23,9 @@ export function cacheGoalHistory(payload: unknown, liveContent: string | readonl
 	if (last?.role !== "user" || !Array.isArray(last.content)) return undefined;
 	// Match on text membership, not the type tag: Bedrock payloads use
 	// typeless { text } blocks, and neither cachePoint markers nor thinking
-	// blocks carry a text field, so they can never match by accident.
+	// blocks carry a text field, so they can never match by accident. A real
+	// history block quoting a live tail verbatim would misclassify as transient;
+	// accepted: it requires an exact full-string quote of a volatile block.
 	const isLiveText = (block: unknown): boolean => {
 		const record = asRecord(block);
 		return typeof record?.text === "string" && live.has(record.text);
@@ -42,7 +44,7 @@ export function cacheGoalHistory(payload: unknown, liveContent: string | readonl
 				const block = asRecord(previous.content[j]);
 				if (!block || isLiveText(block) || !["text", "image", "document", "toolUse", "toolResult"].some(key => key in block)) continue;
 				last.content.pop();
-				if (!asRecord(previous.content[j + 1])?.cachePoint) previous.content.splice(j + 1, 0, bedrockPoint);
+				if (!asRecord(previous.content[j + 1])?.cachePoint) previous.content.splice(j + 1, 0, { ...bedrockPoint });
 				return payload;
 			}
 		}
