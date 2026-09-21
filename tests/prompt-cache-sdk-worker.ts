@@ -50,7 +50,7 @@ for (const flavor of ["anthropic-messages", "openai-completions", "openai-respon
 
 // Advancing-history regression: a completed assistant turn entering history must
 // not displace the previously sent goal-state tail. The production retention
-// helper builds each request, so this exercises the real injection path: request
+// helper builds each request (hook wiring is tested separately): request
 // N's serialized conversation must be an exact prefix of request N+1's, letting
 // implicit caches (OpenAI Responses / Chat Completions, which carry no explicit
 // marker) reuse the full prefix instead of freezing at the first injection point.
@@ -92,6 +92,58 @@ for (const flavor of ["openai-completions", "openai-responses"] as const) {
 			// Two advances add at most the completed turns plus their small counter tails:
 			// the stable policy block is retained in place, never resent.
 			assert.ok(c.length - a.length <= 4, "retained tails grow by state changes, not by requests");
+			// Real tool-loop history, including parallel calls/results, followed by
+			// a user turn. No retained user tail may split a call/result pair.
+			session.push({...turn(3, 4), content: [
+				{type: "toolCall", id: "call_a", name: "read", arguments: {path: "a"}},
+				{type: "toolCall", id: "call_b", name: "read", arguments: {path: "b"}},
+			], stopReason: "toolUse"});
+			for (const id of ["call_a", "call_b"]) session.push({role: "toolResult", toolCallId: id, toolName: "read", content: [{type: "text", text: id}], isError: false, timestamp: 5});
+			const fourth = conversation(await capture(session, {state, counters: "Usage: 400 tokens"}));
+			assert.deepEqual(fourth.slice(0, c.length), c);
+			assert.ok(!JSON.stringify(fourth).includes("No result provided"), "serializer never synthesizes an orphan result");
+			assert.deepEqual(conversation(await capture(session, {state, counters: "Usage: 400 tokens"})), fourth, "retry does not grow the prompt");
+			session.push(turn(4, 6), {role: "user", content: "continue", timestamp: 7});
+			const fifth = conversation(await capture(session, {state, counters: "Usage: 500 tokens"}));
+			assert.deepEqual(fifth.slice(0, fourth.length), fourth);
 		} finally { rmSync(cwd, {recursive: true, force: true}); }
 	});
+}
+
+for (const flavor of ["anthropic-messages", "anthropic-compatible-completions"] as const) {
+ test(`real ${flavor} keeps explicit markers on history with retained split tails`, async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "goal-cache-split-"));
+  try {
+   const runtime = await ModelRuntime.create({authPath: path.join(cwd, "auth.json"), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false});
+   const api = flavor === "anthropic-messages" ? flavor : "openai-completions";
+   runtime.registerProvider("split-fixture", {baseUrl: "http://127.0.0.1:1", api, apiKey: "fixture-only", models: [{id: "fixture", name: "fixture", reasoning: false, input: ["text"], cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}, contextWindow: 200000, maxTokens: 128}]});
+   const model = runtime.getModel("split-fixture", "fixture")!;
+   if (api === "openai-completions") model.compat = {cacheControlFormat: "anthropic", supportsLongCacheRetention: true};
+   for (const cacheRetention of ["short", "long", "none"] as const) {
+    const retention = new LiveTailRetention();
+    const session: any[] = [{role: "user", content: "real history", timestamp: 1}];
+    for (let n = 1; n <= 3; n++) {
+     const {messages, transientContents} = retention.apply("split-session", session, {state: "policy", counters: `Usage: ${n}`});
+     let payload: any;
+     let before: any[] = [];
+     const blocks = () => payload.messages.filter((m: any) => m.role !== "system" && m.role !== "developer").flatMap((m: any) => Array.isArray(m.content) ? m.content : []);
+     await runtime.streamSimple(model, {systemPrompt: "unchanging policy", messages: convertToLlm(messages)}, {cacheRetention, sessionId: "same-session", onPayload: value => {
+      payload = value;
+      before = blocks().filter((b: any) => b.cache_control).map((b: any) => structuredClone(b.cache_control));
+      cacheGoalHistory(payload, transientContents);
+      throw new Error("Intentional capture before network dispatch");
+     }}).result();
+     // SDK catches onPayload exceptions, so assertions must run outside it.
+     assert.ok(payload);
+     const marked = blocks().filter((b: any) => b.cache_control);
+     assert.deepEqual(marked.map((b: any) => b.cache_control), before, "marker count and TTL are unchanged");
+     assert.equal(marked.length, cacheRetention === "none" ? 0 : 1);
+     assert.ok(marked.every((b: any) => !transientContents.includes(b.text)), "no live block owns the marker");
+     if (marked.length) assert.equal(marked[0].text, `real history${n === 1 ? "" : ` ${n}`}`);
+     session.push({role: "assistant", content: [{type: "text", text: `result ${n}`}], api, provider: model.provider, model: model.id, stopReason: "stop", usage: {input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15}, timestamp: n * 2});
+     session.push({role: "user", content: `real history ${n + 1}`, timestamp: n * 2 + 1});
+    }
+   }
+  } finally { rmSync(cwd, {recursive: true, force: true}); }
+ });
 }

@@ -1,4 +1,4 @@
-import { schedulerSummary } from "../goal-scheduler-state.ts";
+import { schedulerSummaryParts } from "../goal-scheduler-state.ts";
 import { taskIndex } from "../goal-task-index.ts";
 import { statusLabel, truncateText } from "../goal-core.ts";
 import { promptSafeObjective } from "../goal-contract.ts";
@@ -232,9 +232,13 @@ export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings): { st
 	// The policy block changes only when the goal itself changes; the counters
 	// change nearly every turn. Splitting them lets request-only injection retain
 	// each at its own rate so consecutive provider requests stay prefix-stable.
-	const state = cachedPrompt(goal, settings, "goal", () => buildGoalPrompt(goal, settings));
+	// Scheduling instructions ride with the policy block: they are cleared by
+	// omission, so a retained copy would keep issuing a cancelled order.
+	const fixed = cachedPrompt(goal, settings, "goal", () => buildGoalPrompt(goal, settings));
+	const { runs, instructions } = schedulerSummaryParts(goal.scheduler, settings?.maxAutonomousRuns);
+	const state = instructions ? `${fixed}\n\n${instructions}` : fixed;
 	const budget = budgetLine(goal);
-	const counters = `Usage: ${formatUsage(goal)}${budget ? `\n${budget}` : ""}\n${schedulerSummary(goal.scheduler, settings?.maxAutonomousRuns)}`;
+	const counters = `Usage: ${formatUsage(goal)}${budget ? `\n${budget}` : ""}\n${runs}`;
 	return { state, counters };
 }
 

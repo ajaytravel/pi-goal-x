@@ -89,3 +89,27 @@ test("transient contents cover retained and fresh tails for marker relocation", 
 	const next = retention.apply("s", advanced, { state: "S", counters: "V2" });
 	assert.deepEqual(next.transientContents, ["S", "V1", "V2"]);
 });
+
+test("a retained tail never splits a tool-call batch when history diverges", () => {
+	const retention = new LiveTailRetention();
+	const user = msg("user", "Inspect", 1);
+	const call = (ids: string[]): any => ({ role: "assistant", timestamp: 2, content: ids.map(id => ({ type: "toolCall", id, name: "read", arguments: { path: id } })) });
+	const result = (id: string): any => ({ role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text: "OK" }], timestamp: 3, isError: false });
+	const fresh = { state: "S", counters: "V" };
+	retention.apply("s", [user, call(["a"]), result("a")], fresh);
+	// A different branch with the same shape must not inherit the old anchor.
+	const out = retention.apply("s", [user, call(["b", "c"]), result("b"), result("c")], fresh).messages;
+	const roles = out.map((m: any) => m.role);
+	const firstResult = roles.indexOf("toolResult");
+	assert.deepEqual(roles.slice(firstResult, firstResult + 2), ["toolResult", "toolResult"], "tool results stay adjacent");
+	assert.deepEqual(roles.slice(-2), ["custom", "custom"], "live state rides at the tail");
+});
+
+test("an unchanged request near capacity keeps its prefix instead of resetting", () => {
+	const retention = new LiveTailRetention();
+	const base = [msg("user", "h", 1)];
+	let previous: any[] = [];
+	for (let i = 0; i < MAX_RETAINED_LIVE_TAILS - 2; i++) previous = retention.apply("s", base, { state: "S", counters: `V${i}` }).messages;
+	const repeat = retention.apply("s", base, { state: "S", counters: `V${MAX_RETAINED_LIVE_TAILS - 3}` }).messages;
+	assert.deepEqual(repeat, previous, "a zero-growth request appends nothing and drops nothing");
+});

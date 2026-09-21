@@ -36,3 +36,47 @@ test("Bedrock moves its existing cachePoint before the live message", () => {
  assert.deepEqual(payload.messages[0].content.at(-1), {cachePoint: {type: "default", ttl: "1h"}});
  assert.deepEqual(payload.messages[1].content, [{text: live}]);
 });
+
+test("split and retained live blocks never receive the explicit breakpoint", () => {
+ const counters = "Usage: 456 tokens";
+ for (const retained of [live, [{type: "text", text: live}]]) {
+  const payload: any = {messages: [
+   {role: "user", content: [{type: "text", text: "real history"}]},
+   {role: "user", content: retained},
+   {role: "assistant", content: [{type: "thinking", thinking: "reasoning"}]},
+   {role: "user", content: [{type: "text", text: counters, cache_control: control}]},
+  ]};
+  cacheGoalHistory(payload, [live, counters]);
+  assert.deepEqual(payload.messages[0].content[0].cache_control, control);
+  assert.ok(!JSON.stringify(payload.messages.slice(1)).includes("cache_control"));
+ }
+});
+
+test("Bedrock relocates a merged live suffix without moving real blocks", () => {
+ const point = {cachePoint: {type: "default", ttl: "1h"}};
+ const history = {text: "real history"};
+ const payload: any = {messages: [{role: "user", content: [history, {text: live}, {text: "counters"}, point]}]};
+ cacheGoalHistory(payload, [live, "counters"]);
+ assert.deepEqual(payload.messages[0].content, [history, point, {text: live}, {text: "counters"}]);
+});
+
+test("Bedrock skips retained tails separated from the fresh tail by empty content", () => {
+ const point = {cachePoint: {type: "default"}};
+ const payload: any = {messages: [
+  {role: "user", content: [{text: "history"}]},
+  {role: "user", content: [{text: live}]},
+  {role: "assistant", content: []},
+  {role: "user", content: [{text: "counters"}, point]},
+ ]};
+ cacheGoalHistory(payload, [live, "counters"]);
+ assert.deepEqual(payload.messages[0].content.at(-1), point);
+ assert.equal(JSON.stringify(payload).match(/cachePoint/g)?.length, 1);
+ assert.ok(!JSON.stringify(payload.messages.slice(1)).includes("cachePoint"));
+});
+
+test("Bedrock does not relocate another extension's bare cachePoint", () => {
+ const payload = {messages: [{role: "user", content: [{text: "history"}]}, {role: "user", content: [{cachePoint: {type: "default"}}]}]};
+ const original = structuredClone(payload);
+ assert.equal(cacheGoalHistory(payload, live), undefined);
+ assert.deepEqual(payload, original);
+});

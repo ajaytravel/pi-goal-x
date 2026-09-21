@@ -32,21 +32,19 @@ export function cacheGoalHistory(payload: unknown, liveContent: string | readonl
 	// may be several live blocks; skip back over all of them.
 	const bedrockPoint = asRecord(last.content.at(-1));
 	if (asRecord(bedrockPoint?.cachePoint)) {
-		const rest = last.content.slice(0, -1);
-		if (!rest.every(isLiveText)) return undefined;
-		let i = messages.length - 2;
-		while (i >= 0) {
-			const candidate = asRecord(messages[i]);
-			if (!candidate || candidate.role !== "user" || !Array.isArray(candidate.content) || candidate.content.length === 0) break;
-			if (!candidate.content.every(isLiveText)) break;
-			i--;
-		}
-		for (; i >= 0; i--) {
+		// Require our live text immediately before the marker. A bare marker
+		// or another extension's suffix is not ours to relocate.
+		if (!isLiveText(last.content.at(-2))) return undefined;
+		for (let i = messages.length - 1; i >= 0; i--) {
 			const previous = asRecord(messages[i]);
-			if (!Array.isArray(previous?.content) || previous.content.length === 0) continue;
-			if (!previous.content.some(block => asRecord(block)?.cachePoint)) previous.content.push(bedrockPoint);
-			last.content.pop();
-			return payload;
+			if (!Array.isArray(previous?.content)) continue;
+			for (let j = previous.content.length - 1; j >= 0; j--) {
+				const block = asRecord(previous.content[j]);
+				if (!block || isLiveText(block) || !["text", "image", "document", "toolUse", "toolResult"].some(key => key in block)) continue;
+				last.content.pop();
+				if (!asRecord(previous.content[j + 1])?.cachePoint) previous.content.splice(j + 1, 0, bedrockPoint);
+				return payload;
+			}
 		}
 		return undefined;
 	}
@@ -55,7 +53,7 @@ export function cacheGoalHistory(payload: unknown, liveContent: string | readonl
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = asRecord(messages[i]);
 		if (!message || !["user", "assistant", "tool"].includes(String(message.role))) continue;
-		if (typeof message.content === "string" && message.content.length > 0) {
+		if (typeof message.content === "string" && message.content.length > 0 && !live.has(message.content)) {
 			message.content = [{ type: "text", text: message.content, cache_control: tail.cache_control }];
 			delete tail.cache_control;
 			return payload;

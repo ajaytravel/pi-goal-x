@@ -54,14 +54,27 @@ export function normalizeGoalScheduler(raw: unknown): GoalSchedulerState | undef
 	return structuredClone(s);
 }
 
-export function schedulerSummary(s: GoalSchedulerState | undefined, limit?: number): string {
-	const lines = [`Autonomous runs: ${s?.used ?? 0}/${limit ?? "unlimited"}${limit === 0 ? " (automatic continuation disabled)" : ""}.`];
-	if (!s) return lines.join("\n");
-	if (s.decision?.kind === "ready") lines.push(`Next action: ${s.decision.nextAction}`);
-	if (s.wait) {
-		lines.push(`Waiting: ${s.wait.reason}; wait_id=${s.wait.id}; deadline=${new Date(s.wait.deadline).toISOString()}.`);
-		if (s.wait.nextCheckAt !== undefined) lines.push(`Next check: ${new Date(s.wait.nextCheckAt).toISOString()}; ${s.wait.remainingChecks} checks remaining.`);
+/**
+ * Split scheduling text into an append-safe counter line and the standing
+ * instructions. Instructions (next action, wait, admission) are cleared by
+ * omission, so a retained stale copy would keep issuing a cancelled order:
+ * they belong with the reset-on-change state, never with retained counters.
+ */
+export function schedulerSummaryParts(s: GoalSchedulerState | undefined, limit?: number): { runs: string; instructions: string } {
+	const runs = `Autonomous runs: ${s?.used ?? 0}/${limit ?? "unlimited"}${limit === 0 ? " (automatic continuation disabled)" : ""}.`;
+	const lines: string[] = [];
+	if (s) {
+		if (s.decision?.kind === "ready") lines.push(`Next action: ${s.decision.nextAction}`);
+		if (s.wait) {
+			lines.push(`Waiting: ${s.wait.reason}; wait_id=${s.wait.id}; deadline=${new Date(s.wait.deadline).toISOString()}.`);
+			if (s.wait.nextCheckAt !== undefined) lines.push(`Next check: ${new Date(s.wait.nextCheckAt).toISOString()}; ${s.wait.remainingChecks} checks remaining.`);
+		}
+		if (s.phase === "interrupted" || s.phase === "claimed") lines.push("Execution requires dispatch admission or explicit /goal-resume after interruption.");
 	}
-	if (s.phase === "interrupted" || s.phase === "claimed") lines.push("Execution requires dispatch admission or explicit /goal-resume after interruption.");
-	return lines.join("\n");
+	return { runs, instructions: lines.join("\n") };
+}
+
+export function schedulerSummary(s: GoalSchedulerState | undefined, limit?: number): string {
+	const { runs, instructions } = schedulerSummaryParts(s, limit);
+	return instructions ? `${runs}\n${instructions}` : runs;
 }

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { asRecord } from "./goal-record.ts";
 
 /**
@@ -12,12 +13,13 @@ import { asRecord } from "./goal-record.ts";
  *
  * This module makes each request a true prefix of the next: previously sent
  * tails are re-inserted verbatim at their recorded anchor (the session length
- * when they were emitted, verified by a bounded fingerprint of the anchor
- * message), and only genuinely new tail content is appended. Identical
- * content across repeated requests appends nothing, so tool loops and idle
- * re-requests cost zero growth. A stable-state change, an anchor mismatch
- * (compaction, resume, session-tree moves, filter changes), or overflow all
- * perform one documented full reset instead of silently shifting the prefix.
+ * when they were emitted, verified by a digest of the anchor message), and
+ * only genuinely new tail content is appended. Identical content across
+ * repeated requests appends nothing, so tool loops and idle re-requests cost
+ * zero growth. A stable-state change, an anchor mismatch (compaction, resume,
+ * session-tree moves, filter changes), an unsafe insertion point, or overflow
+ * all perform one documented full reset instead of silently shifting the
+ * prefix or corrupting message structure.
  */
 
 export const LIVE_CONTEXT_TYPE = "pi-goal-live-context";
@@ -56,22 +58,30 @@ function freshBlocks(fresh: FreshLiveTails): string[] {
 	return fresh.counters === undefined ? [fresh.state] : [fresh.state, fresh.counters];
 }
 
-/** Bounded, non-cryptographic identity for an anchor message. Collisions only cost a cache miss. */
+/**
+ * Full-message digest. A truncated sample would let two different histories
+ * share an anchor, and a mismatch is not merely a cache miss: a retained tail
+ * replayed at the wrong index can land between a tool call and its results.
+ */
 function fingerprintAnchor(message: unknown): string {
-	const record = asRecord(message);
-	const role = typeof record?.role === "string" ? record.role : "?";
-	const timestamp = typeof record?.timestamp === "number" ? record.timestamp : 0;
-	const content = record?.content;
-	const length = typeof (content as { length?: unknown } | null | undefined)?.length === "number"
-		? (content as { length: number }).length
-		: -1;
-	let sample = "?";
+	let serialized: string;
 	try {
-		sample = (JSON.stringify(content) ?? "?").slice(0, 120);
+		serialized = JSON.stringify(message) ?? "undefined";
 	} catch {
-		sample = "?";
+		// Unserializable messages can never be proven identical: force a reset.
+		return `unhashable:${Math.random()}`;
 	}
-	return `${role}|${timestamp}|${length}|${sample}`;
+	return createHash("sha256").update(serialized).digest("base64");
+}
+
+/**
+ * Tool results must stay adjacent to the call they answer, so a retained tail
+ * may never be inserted directly before one. Providers either reject a split
+ * batch or the SDK synthesizes placeholder results for the orphaned calls.
+ */
+function splitsToolBatch(next: unknown): boolean {
+	const record = asRecord(next);
+	return record?.role === "toolResult";
 }
 
 function makeLiveMessage(content: string, kind: LiveTailKind): unknown {
@@ -102,20 +112,24 @@ export class LiveTailRetention {
 			}
 			this.sessions.set(sessionKey, session);
 		}
-		// A changed policy block supersedes every previously sent tail: start
-		// fresh rather than leave stale objectives lingering mid-history.
-		if (session.lastFresh !== undefined && session.lastFresh.state !== fresh.state) {
-			session.tails = [];
-			session.lastFresh = undefined;
-		}
-		// Truncate at the first anchor that no longer matches: compaction,
-		// resume, tree moves, and filter changes all rewrite history. Forcing
-		// a re-append below guarantees the live state is never lost silently.
+		const reset = () => {
+			session!.tails = [];
+			session!.lastFresh = undefined;
+		};
+		// A changed state block supersedes every previously sent tail: start
+		// fresh rather than leave a stale objective or a cancelled scheduling
+		// instruction lingering mid-history.
+		if (session.lastFresh !== undefined && session.lastFresh.state !== fresh.state) reset();
+		// Truncate at the first anchor that no longer matches or that would now
+		// split a tool-call batch: compaction, resume, tree moves, and filter
+		// changes all rewrite history. Re-appending below guarantees the live
+		// state is never lost silently.
 		let valid = 0;
 		while (valid < session.tails.length) {
 			const tail = session.tails[valid]!;
 			if (tail.anchorIndex > base.length) break;
 			if (tail.anchorIndex > 0 && fingerprintAnchor(base[tail.anchorIndex - 1]) !== tail.anchorFingerprint) break;
+			if (splitsToolBatch(base[tail.anchorIndex])) break;
 			valid++;
 		}
 		if (valid < session.tails.length) {
@@ -123,24 +137,23 @@ export class LiveTailRetention {
 			session.lastFresh = undefined;
 		}
 		const blocks = freshBlocks(fresh);
-		// Overflow resets fully: dropping the oldest tail would break the
-		// prefix on every subsequent request, while one reset per window
-		// keeps the amortized hit rate near (MAX - 1) / MAX.
-		if (session.tails.length + blocks.length > MAX_RETAINED_LIVE_TAILS) {
-			session.tails = [];
-			session.lastFresh = undefined;
-		}
-		const messages = [...base];
-		for (let i = session.tails.length - 1; i >= 0; i--) {
-			const tail = session.tails[i]!;
-			messages.splice(tail.anchorIndex, 0, { ...(makeLiveMessage(tail.content, tail.kind) as object) } as T);
-		}
 		// Append only the suffix that differs from the last emitted tails, so
 		// unchanged content across repeats, tool loops, and history advances
 		// adds zero blocks while keeping the prefix literal.
 		const previous = session.lastFresh === undefined ? [] : freshBlocks(session.lastFresh);
 		let shared = 0;
 		while (shared < blocks.length && shared < previous.length && blocks[shared] === previous[shared]) shared++;
+		// Overflow is measured against what this request actually appends: an
+		// unchanged request adds nothing and must never trigger a reset.
+		if (session.tails.length + (blocks.length - shared) > MAX_RETAINED_LIVE_TAILS) {
+			reset();
+			shared = 0;
+		}
+		const messages = [...base];
+		for (let i = session.tails.length - 1; i >= 0; i--) {
+			const tail = session.tails[i]!;
+			messages.splice(tail.anchorIndex, 0, { ...(makeLiveMessage(tail.content, tail.kind) as object) } as T);
+		}
 		for (let i = shared; i < blocks.length; i++) {
 			const content = blocks[i]!;
 			const kind: LiveTailKind = i === 0 ? "goal-state" : "goal-counters";
