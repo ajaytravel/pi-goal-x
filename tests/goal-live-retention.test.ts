@@ -114,30 +114,44 @@ test("an unchanged request near capacity keeps its prefix instead of resetting",
 	assert.deepEqual(repeat, previous, "a zero-growth request appends nothing and drops nothing");
 });
 
-test("a middle-message rewrite resets even when the trailing message is identical", () => {
-	const retention = new LiveTailRetention();
-	const fresh = { state: "S", counters: "V" };
-	retention.apply("s", [msg("user", "early", 1), msg("user", "late", 2)], fresh);
-	// Same tail, same length, but the earlier message was rewritten.
-	const out = retention.apply("s", [msg("user", "edited", 1), msg("user", "late", 2)], fresh).messages;
-	const customs = out.filter((m: any) => m.role === "custom");
-	assert.equal(customs.length, 2, "full reset: only the fresh pair, no retained mid-history tails");
-	assert.deepEqual(contents(out).slice(0, 2), ["edited", "late"]);
-});
+for (const editInPlace of [false, true]) {
+	test(`a middle-history ${editInPlace ? "in-place edit" : "replacement"} drops previously retained counters`, () => {
+		const retention = new LiveTailRetention();
+		const early = { role: "user", content: [{ type: "text", text: "early" }], timestamp: 1 };
+		const base = [early, msg("user", "late", 2)];
+		retention.apply("s", base, { state: "S", counters: "V1" });
+		base.push(msg("assistant", "reply", 3));
+		retention.apply("s", base, { state: "S", counters: "V2" });
+		// Keep both anchor messages identical. Only earlier history changes.
+		if (editInPlace) early.content[0]!.text = "edited";
+		else base[0] = { ...early, content: [{ type: "text", text: "edited" }] };
+		const next = retention.apply("s", base, { state: "S", counters: "V3" });
+		assert.deepEqual(next.messages.slice(0, base.length), base, "no old tail remains between history messages");
+		assert.deepEqual(contents(next.messages.slice(base.length)), ["S", "V3"]);
+		assert.deepEqual(next.transientContents, ["S", "V3"], "old counters are gone, not merely replayed at the same anchor");
+		assert.deepEqual(retention.apply("s", base, { state: "S", counters: "V3" }).messages, next.messages, "an unchanged retry does not reset or append");
+	});
+}
 
-test("a retained tail never lands before a wire tool-role result", () => {
-	const retention = new LiveTailRetention();
-	const user = msg("user", "Inspect", 1);
-	const callMsg: any = { role: "assistant", timestamp: 2, content: [{ type: "toolCall", id: "a", name: "read", arguments: {} }] };
-	const wireResult: any = { role: "tool", toolCallId: "a", timestamp: 3, content: [{ type: "text", text: "OK" }] };
-	const fresh = { state: "S", counters: "V" };
-	retention.apply("s", [user, callMsg, wireResult], fresh);
-	const blockResult: any = { role: "assistant", timestamp: 3, content: [{ type: "tool_result", text: "OK" }] };
-	const out = retention.apply("s", [user, callMsg, blockResult], fresh).messages;
-	const roles = out.map((m: any) => m.role);
-	assert.deepEqual(roles.slice(-2), ["custom", "custom"], "live state rides at the tail, never inside the tool pair");
-	assert.ok(!roles.slice(0, -2).includes("custom"), "no retained tail splits the rewritten tool batch");
-});
+for (const resultShape of ["toolResult", "tool", "tool_result"] as const) {
+	test(`a retained tail never splits an extended result batch (${resultShape})`, () => {
+		const retention = new LiveTailRetention();
+		const call = { role: "assistant", timestamp: 2, content: ["a", "b"].map(id => ({ type: "toolCall", id, name: "read", arguments: {} })) };
+		const result = (id: string) => ({ role: "toolResult", toolCallId: id, toolName: "read", timestamp: 3, content: [{ type: "text", text: "OK" }], isError: false });
+		const base = [msg("user", "Inspect", 1), call, result("a")];
+		retention.apply("s", base, { state: "S", counters: "V1" });
+		// No prior message changes: only the insertion-point guard can stop a
+		// replay between these results when a filtered batch is extended.
+		const extra = resultShape === "tool_result"
+			? { role: "user", content: [{ type: "tool_result", tool_use_id: "b", content: "OK" }], timestamp: 4 }
+			: { ...result("b"), role: resultShape };
+		const advanced = [...base, extra];
+		const next = retention.apply("s", advanced, { state: "S", counters: "V2" });
+		assert.deepEqual(next.messages.slice(0, advanced.length), advanced, "the result batch stays contiguous");
+		assert.deepEqual(contents(next.messages.slice(advanced.length)), ["S", "V2"]);
+		assert.deepEqual(next.transientContents, ["S", "V2"]);
+	});
+}
 
 test("tails anchored on empty history reset once real history arrives", () => {
 	const retention = new LiveTailRetention();

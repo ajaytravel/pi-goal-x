@@ -71,28 +71,8 @@ function freshBlocks(fresh: FreshLiveTails): string[] {
 	return fresh.counters === undefined ? [fresh.state] : [fresh.state, fresh.counters];
 }
 
-/** Per-message digest cache: anchors are re-hashed every request otherwise. */
-const fingerprintCache = new WeakMap<object, string | null>();
-
-/**
- * Full-message digest, or null when the message cannot be serialized.
- * Null never matches anything (fail closed): an unprovable history forces a
- * reset rather than a misplaced replay.
- */
+/** Full-message digest, or null (never a match) when serialization fails. */
 function fingerprintMessage(message: unknown): string | null {
-	if (typeof message === "object" && message !== null) {
-		const cached = fingerprintCache.get(message);
-		if (cached !== undefined) return cached;
-		let digest: string | null;
-		try {
-			const serialized = JSON.stringify(message) ?? "undefined";
-			digest = createHash("sha256").update(serialized).digest("base64");
-		} catch {
-			digest = null;
-		}
-		fingerprintCache.set(message, digest);
-		return digest;
-	}
 	try {
 		const serialized = JSON.stringify(message) ?? "undefined";
 		return createHash("sha256").update(serialized).digest("base64");
@@ -145,6 +125,9 @@ export class LiveTailRetention {
 			this.sessions.delete(sessionKey);
 			return { messages: [...base], transientContents: [] };
 		}
+		// Hash each message once per request. Extensions may reuse and mutate
+		// message objects, so object identity cannot cache a digest across requests.
+		const fingerprints = base.map(fingerprintMessage);
 		let session = this.sessions.get(sessionKey);
 		if (!session) {
 			session = { tails: [], lastFresh: undefined, baseFingerprints: [] };
@@ -172,7 +155,7 @@ export class LiveTailRetention {
 		if (session.baseFingerprints.length > base.length) reset();
 		else {
 			for (let i = 0; i < session.baseFingerprints.length; i++) {
-				const current = fingerprintMessage(base[i]);
+				const current = fingerprints[i];
 				if (current === null || current !== session.baseFingerprints[i]) {
 					reset();
 					break;
@@ -187,7 +170,7 @@ export class LiveTailRetention {
 			const tail = session.tails[valid]!;
 			if (tail.anchorIndex > base.length) break;
 			if (tail.anchorIndex > 0) {
-				const current = fingerprintMessage(base[tail.anchorIndex - 1]);
+				const current = fingerprints[tail.anchorIndex - 1];
 				if (current === null || current !== tail.anchorFingerprint) break;
 			}
 			if (splitsToolBatch(base[tail.anchorIndex])) break;
@@ -219,9 +202,9 @@ export class LiveTailRetention {
 			const content = blocks[i]!;
 			const kind: LiveTailKind = i === 0 ? "goal-state" : "goal-counters";
 			messages.push(makeLiveMessage(content, kind));
-			session.tails.push({ anchorIndex: base.length, anchorFingerprint: base.length === 0 ? "root" : fingerprintMessage(base[base.length - 1]), content, kind });
+			session.tails.push({ anchorIndex: base.length, anchorFingerprint: fingerprints.at(-1) ?? null, content, kind });
 		}
-		session.baseFingerprints = base.map(fingerprintMessage);
+		session.baseFingerprints = fingerprints;
 		session.lastFresh = { state: fresh.state, counters: fresh.counters };
 		return { messages, transientContents: [...new Set([...session.tails.map(tail => tail.content), ...blocks])] };
 	}
