@@ -244,6 +244,23 @@ function buildGoalPrompt(goal: GoalRecord, settings?: GoalSettings): string {
   untrustedObjectiveBlock(goal), taskListBlock(goal, settings), verificationContractBlock(goal, settings),
  ].filter(Boolean).join("\n\n");
 }
+/** Model-visible goal text. Counters stay on the dashboard, not in this message. */
+export function goalSnapshotPrompt(goal: GoalRecord, settings?: GoalSettings): string {
+	const fixed = cachedPrompt(goal, settings, "goal", () => buildGoalPrompt(goal, settings));
+	// Decisions are instructions, not usage counters. In particular, repair
+	// continuations must retain their next action even when allowance is hidden.
+	const scheduler = goal.scheduler;
+	const instructions: string[] = [fixed];
+	if (scheduler?.decision?.kind === "ready") instructions.push(`Next action: ${scheduler.decision.nextAction}`);
+	if (scheduler?.wait) {
+		const wait = scheduler.wait;
+		instructions.push(`Waiting: ${wait.reason}; wait_id=${wait.id}; deadline=${new Date(wait.deadline).toISOString()}.`);
+	}
+	if (scheduler?.phase === "interrupted" || scheduler?.phase === "claimed") {
+		instructions.push("Execution requires dispatch admission or explicit /goal-resume after interruption.");
+	}
+	return instructions.join("\n\n");
+}
 
 /** Steering injected when the user edits the objective (bounded). */
 export function objectiveEditedPrompt(goal: GoalRecord): string {

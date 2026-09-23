@@ -14,7 +14,7 @@ export function filterGoalSessionContext<T>(messages: readonly T[], child = fals
 		const message = messages[i]!;
 		const entry = message as { role?: string; customType?: string; details?: unknown; content?: unknown } | null;
 		const remove = entry && typeof entry === "object" && entry.role === "custom"
-			&& (entry.customType === GOAL_AUDIT_ENTRY || (child && goalEventMessageId(entry) !== null));
+			&& (entry.customType === GOAL_AUDIT_ENTRY || (child && (entry.customType === "pi-goal-snapshot" || goalEventMessageId(entry) !== null)));
 		if (remove) filtered ??= messages.slice(0, i);
 		else filtered?.push(message);
 	}

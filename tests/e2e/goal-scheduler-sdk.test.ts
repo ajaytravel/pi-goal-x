@@ -35,3 +35,8 @@ test("real SDK: native retry and compaction preserve consumed autonomous allowan
  assert.equal(result.requests, 5);
  assert.equal(result.used, 4);
 });
+
+test("real SDK: budget exhaustion appends steering before the next tool-loop request", { timeout: 30000 }, async () => {
+	const { stdout } = await promisify(execFile)(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("../scheduler-sdk-worker.mjs", import.meta.url)), "--budget"], { timeout: 25000 });
+	assert.equal(JSON.parse(stdout.trim().split("\n").at(-1)!).passed, true);
+});

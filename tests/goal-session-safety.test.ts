@@ -69,3 +69,12 @@ test("child installer registers only context filtering, without constructing goa
 		else process.env.PI_SUBAGENT_CHILD = saved;
 	}
 });
+
+test("forked workers filter parent goal snapshots but parent requests preserve them", () => {
+	const snapshot = { role: "custom", customType: "pi-goal-snapshot", content: "Parent goal is current", display: false };
+	const user = { role: "user", content: "Delegated task" };
+	const source = [snapshot, user];
+	assert.deepEqual(filterGoalSessionContext(source, true), [user]);
+	assert.equal(filterGoalSessionContext(source), null);
+	assert.equal(source[0], snapshot, "filtering does not mutate parent history");
+});

@@ -149,17 +149,15 @@ test("golden: stale checkpoint for a non-focused goal aborts the turn and inject
 		assert.ok(bas);
 
 		// A checkpoint claims a goal that is not focused/active in this session.
-		await bas({
+		const started = await bas({
 			systemPrompt: "base",
 			prompt: '<pi_goal_continuation goal_id="ghost-goal" kind="checkpoint">continue',
 			systemPromptOptions: {},
-		}, h.ctx);
-
+		}, h.ctx) as { message?: { content: string } } | undefined;
 		assert.equal(h.aborts, 1, "stale checkpoint must abort the turn");
-		const result = await h.handlers["context"]!({ messages: [] }, h.ctx);
-		const systemPrompt = (result as { messages?: {content: string}[] } | undefined)?.messages?.at(-1)?.content ?? "";
-		assert.match(systemPrompt, /\[GOAL STALE goalId=ghost-goal\]/);
-		assert.match(systemPrompt, /Do not perform task work for this stale checkpoint/);
+		assert.match(started?.message?.content ?? "", /\[GOAL STALE goalId=ghost-goal\]/);
+		assert.match(started?.message?.content ?? "", /Do not perform task work for this stale checkpoint/);
+		assert.equal(await h.handlers["context"]!({ messages: [] }, h.ctx), undefined, "stale guidance is not a request-only tail");
 	} finally {
 		// temp dir cleanup is best-effort.
 	}

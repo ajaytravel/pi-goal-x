@@ -26,10 +26,11 @@ async function fixture(t: TestContext, limit?: number, owner = "owner", existing
 	const handlers: Record<string, Function> = {};
 	const tools = new Map<string, any>();
 	const sent: any[] = [];
+	const appended: any[] = [];
 	const notifications: string[] = [];
 	const listeners = new Map<string, Function>();
 	let aborts = 0;
-	const pi = { registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: () => {}, on: (event: string, handler: Function) => { handlers[event] = handler; }, getActiveTools: () => ["read", "write", "bash"], setActiveTools: () => {}, appendEntry: () => {}, registerMessageRenderer: () => {}, sendMessage: (message: unknown) => { sent.push(message); }, events: { on: (name: string, fn: Function) => { listeners.set(name, fn); return () => listeners.delete(name); }, emit: (name: string, event: unknown) => listeners.get(name)?.(event) } };
+	const pi = { registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand: () => {}, on: (event: string, handler: Function) => { handlers[event] = handler; }, getActiveTools: () => ["read", "write", "bash"], setActiveTools: () => {}, appendEntry: () => {}, registerMessageRenderer: () => {}, sendMessage: (message: unknown, options?: { triggerTurn?: boolean }) => { (options?.triggerTurn === false ? appended : sent).push(message); }, events: { on: (name: string, fn: Function) => { listeners.set(name, fn); return () => listeners.delete(name); }, emit: (name: string, event: unknown) => listeners.get(name)?.(event) } };
 	const ctx = { cwd, hasUI: false, isIdle: () => true, hasPendingMessages: () => false, abort: () => { aborts++; }, getSystemPrompt: () => "base", sessionManager: { getSessionId: () => owner, getCwd: () => cwd, getRoot: () => cwd, getBranch: () => [{ type: "custom", customType: "pi-goal-focus", data: goalFocusDetails(goal.id, "created") }] }, ui: { notify: (message: string) => notifications.push(message), setStatus: () => {}, setWidget: () => {} } } as unknown as ExtensionContext;
 	goalExtension(pi as any);
 	const core = (pi as any)._goalCore as GoalCore;
@@ -45,7 +46,7 @@ async function fixture(t: TestContext, limit?: number, owner = "owner", existing
 	const admit = () => { begin(); core.scheduler.message(ctx, { ...sent.at(-1), role: "custom" }); };
 	const ready = () => core.scheduler.declare(ctx, { kind: "ready", next_action: "Inspect the next result" });
 	const wait = () => core.scheduler.declare(ctx, { kind: "wait", reason: "Await fixture job", deadline: new Date(Date.now() + 10000).toISOString(), polling: { interval_seconds: 1, max_checks: 2 } });
-	return { cwd, ctx, core, handlers, tools, sent, notifications, begin, admit, ready, wait, pi, aborts: () => aborts };
+	return { cwd, ctx, core, handlers, tools, sent, appended, notifications, begin, admit, ready, wait, pi, aborts: () => aborts };
 }
 
 test("explicit zero means no automatic model runs, even for missing disposition", async t => {
@@ -462,47 +463,122 @@ test("default settings inherit strict mode with explicit false overriding global
  assert.equal(parseGoalSettings({strictExecutionContract: "invalid"}).strictExecutionContract, undefined);
 });
 
-test("prompt cache: normal and custom runs preserve history while refreshing all live goal state", async t => {
+test("prompt cache: goal text is appended and a tool loop adds no vanishing tail", async t => {
  const h = await fixture(t);
  const history: any[] = [{role: "user", content: "Work on the goal", timestamp: 1}];
  const original = structuredClone(history);
- const request = async () => (await h.handlers.context!({messages: history}, h.ctx)).messages;
- const preflight = await h.handlers.before_agent_start!({prompt: "continue", systemPrompt: "host policy"}, h.ctx);
- assert.equal(preflight, undefined, "goal state never rewrites the system prefix");
- const first = await request();
- assert.deepEqual(first.slice(0, -1), original);
- assert.match(first.at(-1).content, /PI GOAL ACTIVE/);
- const wire: any = {messages: [{role: "user", content: "Work on the goal"}, {role: "user", content: [{type: "text", text: first.at(-1).content, cache_control: {type: "ephemeral"}}]}]};
- await h.handlers.before_provider_request!({payload: wire}, h.ctx);
- assert.equal(wire.messages[0].content[0].cache_control.type, "ephemeral", "registered provider hook places the breakpoint on history");
- assert.equal(wire.messages[1].content[0].cache_control, undefined);
- h.core.state.goal!.usage.tokensUsed = 12345;
- h.core.state.goal!.objective = "Changed objective";
- h.core.state.goal!.scheduler = { ...newGoalScheduler("owner"), used: 7 };
- const toolCall = {role: "assistant", content: [{type: "toolCall", id: "call-1", name: "read", arguments: {path: "README.md"}}], timestamp: 2};
- const toolResult = {role: "toolResult", toolCallId: "call-1", toolName: "read", content: [{type: "text", text: "file contents"}], isError: false, timestamp: 3};
- history.push(toolCall, toolResult);
- const second = await request();
- assert.deepEqual(second.slice(0, -1), history, "tool call and result stay adjacent");
- assert.deepEqual(second.slice(0, original.length), first.slice(0, -1));
- assert.match(second.at(-1).content, /12345 tokens/);
- assert.match(second.at(-1).content, /Changed objective/);
- assert.match(second.at(-1).content, /7\/unlimited/);
- h.core.scheduler.begin(h.ctx); // Custom-message run bypassing preflight.
- for (let i = 0; i < 4; i++) {
-  history.push({role: "custom", customType: "pi-goal-event", content: "legacy full prompt", details: {goalId: h.core.state.goal!.id, kind: "checkpoint"}, timestamp: i + 4});
-  const current = await request();
-  assert.deepEqual(current.slice(0, second.length - 1), second.slice(0, -1));
-  assert.equal(current.filter((m: any) => m.customType === "pi-goal-live-context").length, 1);
-  const before = current.slice(0, -1);
-  const again = await request();
-  assert.deepEqual(again.slice(0, -1), before);
- }
+ const first = await h.handlers.before_agent_start!({prompt: "continue", systemPrompt: "host policy"}, h.ctx);
+ assert.equal(first?.systemPrompt, undefined, "goal state never rewrites the system prefix");
+ assert.equal(first.message.customType, "pi-goal-snapshot");
+ assert.match(first.message.content, /PI GOAL ACTIVE/);
+ assert.doesNotMatch(first.message.content, /Usage:|tokens|Autonomous runs/);
+ history.push({...first.message, role: "custom", timestamp: 2});
+ const duringTools = await h.handlers.context!({messages: history}, h.ctx);
+ assert.equal(duringTools, undefined, "a tool loop adds no request-only goal tail");
  assert.deepEqual(history[0], original[0], "request transforms never mutate stored history");
- for (const status of ["paused", "blocked", "budget_limited"] as const) {
-  h.core.state.goal!.status = status;
-  const stopped = await request();
-  assert.match(stopped.at(-1).content, new RegExp(status.replace("_", " ").toUpperCase()));
-  assert.doesNotMatch(stopped.at(-1).content, /PI GOAL ACTIVE/);
- }
+ h.core.state.goal!.usage.tokensUsed = 12345;
+ h.core.state.goal!.scheduler = { ...newGoalScheduler("owner"), used: 7 };
+ const countersOnly = await h.handlers.before_agent_start!({prompt: "continue", systemPrompt: "host policy"}, h.ctx);
+ assert.equal(countersOnly, undefined, "counter changes do not append another goal message");
+ const old = history.at(-1);
+ const oldText = old.content;
+ h.core.state.goal!.objective = "Changed objective";
+ const edited = await h.handlers.before_agent_start!({prompt: "continue", systemPrompt: "host policy"}, h.ctx);
+ assert.equal(old.content, oldText, "the earlier goal message is not rewritten");
+ assert.match(edited.message.content, /Changed objective/);
+ assert.doesNotMatch(edited.message.content, /12345|7\/unlimited|Usage:/);
+ history.push({...edited.message, role: "custom", timestamp: 3});
+ assert.equal(history.filter((m: any) => m.customType === "pi-goal-live-context").length, 0);
+ const again = await h.handlers.context!({messages: history}, h.ctx);
+ assert.equal(again, undefined);
+});
+
+test("continuation after an objective edit appends a new snapshot and leaves the old one unchanged", async t => {
+ const h = await fixture(t, undefined, "owner", undefined, false);
+ t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+ const first = await h.handlers.before_agent_start!({ prompt: "continue", systemPrompt: "host policy" }, h.ctx);
+ const oldText = first.message.content;
+ assert.match(oldText, /Test explicit scheduling/);
+ h.core.state.goal!.objective = "Changed objective";
+ h.core.scheduler.settled(h.ctx);
+ t.mock.timers.tick(1);
+ const snapshots = h.appended.filter((message: any) => message.customType === "pi-goal-snapshot");
+ const checkpoints = h.sent.filter((message: any) => message.customType === "pi-goal-event");
+ assert.equal(snapshots.length, 1, "the continuation appends the revised snapshot");
+ assert.equal(checkpoints.length, 1, "the continuation still dispatches its checkpoint");
+ assert.match(snapshots[0].content, /Changed objective/);
+ assert.equal(first.message.content, oldText, "the earlier snapshot is not rewritten");
+ assert.doesNotMatch(snapshots[0].content, /Usage:|Autonomous runs/);
+ const { execFile } = await import("node:child_process");
+ const { promisify } = await import("node:util");
+ const { fileURLToPath } = await import("node:url");
+ await promisify(execFile)(process.execPath, [
+  "--experimental-strip-types",
+  fileURLToPath(new URL("./serialize-goal-prefix.ts", import.meta.url)),
+  JSON.stringify({ oldText, newText: snapshots[0].content, checkpoint: checkpoints[0].content }),
+ ], { timeout: 20000 });
+ });
+
+test("snapshot delivery failure pauses instead of continuing with stale text, and resume retries it", async t => {
+	const h = await fixture(t, undefined, "owner", undefined, false);
+	t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+	await h.handlers.before_agent_start!({ prompt: "continue", systemPrompt: "host policy" }, h.ctx);
+	h.core.state.goal!.objective = "Changed objective";
+	const sendMessage = h.pi.sendMessage;
+	h.pi.sendMessage = (message: any, options) => {
+		if (message.customType === "pi-goal-snapshot") throw new Error("Injected snapshot delivery failure");
+		sendMessage(message, options);
+	};
+	h.core.scheduler.settled(h.ctx);
+	t.mock.timers.tick(1);
+	assert.equal(h.sent.length, 0, "the checkpoint must not run without its revised snapshot");
+	assert.equal(h.core.state.goal?.status, "paused");
+	h.pi.sendMessage = sendMessage;
+	assert.equal(h.core.scheduler.resume(h.ctx), true);
+	t.mock.timers.tick(1);
+	assert.equal(h.appended.length, 1, "failed snapshots must not be marked as published");
+	assert.match(h.appended[0].content, /Changed objective/);
+	assert.equal(h.sent.length, 1);
+});
+
+for (const transition of ["clear", "complete"] as const) {
+	test(`${transition} supersedes the last active snapshot without rewriting it`, async t => {
+		const h = await fixture(t);
+		const first = await h.handlers.before_agent_start!({ prompt: "work" }, h.ctx);
+		const original = first.message.content;
+		if (transition === "clear") {
+			h.core.archiveCurrentGoal(h.ctx, "user");
+			h.core.setGoal(null, h.ctx, true, "cleared");
+		} else h.core.state.goal!.status = "complete";
+		const stopped = await h.handlers.before_agent_start!({ prompt: "hello" }, h.ctx);
+		assert.match(stopped?.message.content ?? "", /PI GOAL (INACTIVE|COMPLETE)/);
+		assert.equal(first.message.content, original);
+		assert.equal(await h.handlers.before_agent_start!({ prompt: "hello again" }, h.ctx), undefined);
+	});
+}
+
+test("paused snapshot can be republished after compaction removes its context", async t => {
+	const h = await fixture(t);
+	h.core.state.goal!.status = "paused";
+	const first = await h.handlers.before_agent_start!({ prompt: "hello" }, h.ctx);
+	assert.match(first.message.content, /PI GOAL PAUSED/);
+	await h.handlers.session_compact!({}, h.ctx);
+	const after = await h.handlers.before_agent_start!({ prompt: "hello again" }, h.ctx);
+	assert.equal(after?.message.content, first.message.content);
+});
+
+test("resumed cleared session supersedes a historical active snapshot", async t => {
+	const h = await fixture(t);
+	const first = await h.handlers.before_agent_start!({ prompt: "work" }, h.ctx);
+	h.core.archiveCurrentGoal(h.ctx, "user");
+	h.core.setGoal(null, h.ctx, true, "cleared");
+	// session_tree clears the process-local dedupe; branch history still proves
+	// that this session used to carry goal instructions.
+	const ctx = { ...h.ctx, sessionManager: { ...h.ctx.sessionManager, getBranch: () => [
+		{ type: "custom_message", ...first.message },
+		{ type: "custom", customType: "pi-goal-focus", data: goalFocusDetails(null, "cleared") },
+	] } } as unknown as ExtensionContext;
+	await h.handlers.session_tree!({}, ctx);
+	const stopped = await h.handlers.before_agent_start!({ prompt: "hello" }, ctx);
+	assert.match(stopped?.message.content ?? "", /PI GOAL INACTIVE/);
 });

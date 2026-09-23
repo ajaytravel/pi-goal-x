@@ -8,6 +8,7 @@ import {
 	promptProfile,
 	continuationPrompt,
 	goalPrompt,
+	goalSnapshotPrompt,
 	objectiveEditedPrompt,
 	staleContinuationPrompt,
 	taskListBlock,
@@ -443,4 +444,24 @@ test("allowance configuration refreshes cached guidance without bloating disable
 	const zero = goalPrompt(current, { maxAutonomousRuns: 0 });
 	assert.doesNotMatch(zero, /Saved decisions terminate/);
 	assert.match(zero, /0\/0 \(automatic continuation disabled\)/);
+});
+
+test("goal snapshots retain scheduling instructions without usage or polling counters", () => {
+	const current = goal();
+	current.scheduler = {
+		version: 1, owner: "fixture", generation: "fixture", used: 5, phase: "ready", repairUsed: true,
+		decision: { kind: "ready", nextAction: "This is the only repair prompt", purpose: "repair" },
+		wait: { id: "wait-fixture", token: "private-token", reason: "Await producer", deadline: Date.UTC(2026, 9, 1), intervalMs: 1000, remainingChecks: 2, nextCheckAt: Date.UTC(2026, 8, 30) },
+	};
+	const before = goalSnapshotPrompt(current);
+	assert.match(before, /Next action: This is the only repair prompt/);
+	assert.match(before, /Waiting: Await producer; wait_id=wait-fixture; deadline=2026-10-01T00:00:00.000Z/);
+	assert.doesNotMatch(before, /Usage:|Autonomous runs|Next check:|checks remaining|private-token/);
+	current.usage.tokensUsed += 100;
+	current.scheduler.used += 1;
+	current.scheduler.wait!.remainingChecks = 1;
+	current.scheduler.wait!.nextCheckAt! += 1000;
+	assert.equal(goalSnapshotPrompt(current), before, "counter-only changes leave snapshot bytes identical");
+	current.scheduler.decision = { kind: "ready", nextAction: "Inspect result", purpose: "ready" };
+	assert.match(goalSnapshotPrompt(current), /Next action: Inspect result/, "a changed decision must not reuse a stale cached fragment");
 });

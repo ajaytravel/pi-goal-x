@@ -24,6 +24,8 @@ export interface GoalRuntimeHooks {
 	dispatchFailed?(ctx: ExtensionContext): void;
 	/** Dispatch a hidden follow-up checkpoint message (pi.sendMessage + triggerTurn). */
 	sendFollowUp(content: string, details: Record<string, unknown>): void;
+	/** Persist changed goal text before a continuation that skips before_agent_start. */
+	beforeFollowUp?(ctx: ExtensionContext): void;
 	/** Current focused goal (state.goal). */
 	getGoal(): GoalRecord | null;
 	/** Whether a checkpointed goal id is still actionable (active + autoContinue). */
@@ -57,6 +59,9 @@ export class GoalRuntime {
 
 	constructor(hooks: GoalRuntimeHooks) {
 		this.hooks = hooks;
+	}
+	setBeforeFollowUp(fn: (ctx: ExtensionContext) => void): void {
+		this.hooks.beforeFollowUp = fn;
 	}
 
 	// ── continuation scheduling ──────────────────────────────────────────
@@ -145,8 +150,8 @@ export class GoalRuntime {
 	/**
 	 * Issue #30: the delivered follow-up must trigger the turn, but it no longer
 	 * carries goal state. The persisted content is a tiny v2 marker and the
-	 * details are a bounded structured record; before_agent_start injects the
-	 * authoritative full prompt once per turn.
+	 * details are a bounded structured record. beforeFollowUp appends changed
+	 * goal text first, since custom-message continuations skip before_agent_start.
 	 */
 	private sendQueuedContinuation(ctx: ExtensionContext, scheduledGoalId: string): void {
 		this.continuationTimer = null;
@@ -190,8 +195,13 @@ export class GoalRuntime {
 			checkpointSeq: this.checkpointSeq,
 			timestamp: Date.now(),
 		};
-		try { this.hooks.sendFollowUp(checkpointTriggerPrompt(goal.id), details as unknown as Record<string, unknown>); }
-		catch { this.hooks.dispatchFailed?.(ctx); }
+		try {
+			this.hooks.beforeFollowUp?.(ctx);
+			this.hooks.sendFollowUp(checkpointTriggerPrompt(goal.id), details as unknown as Record<string, unknown>);
+		} catch {
+			// Never continue against stale instructions after a failed snapshot append.
+			this.hooks.dispatchFailed?.(ctx);
+		}
 	}
 
 	// ── turn-stop guard ──────────────────────────────────────────────────

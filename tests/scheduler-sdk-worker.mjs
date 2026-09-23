@@ -14,6 +14,7 @@ const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'scheduler-sdk-'));
 fs.mkdirSync(path.join(cwd, '.pi'));
 const implicit = process.argv.includes('--implicit');
 const uncapped = process.argv.includes('--uncapped');
+const budgetMode = process.argv.includes('--budget');
 fs.writeFileSync(path.join(cwd, '.pi', 'pi-goal-x-settings.json'), JSON.stringify({ ...(!implicit ? { strictExecutionContract: true } : {}), ...(!uncapped ? { maxAutonomousRuns: 4 } : {}) }));
 process.env.PI_GOAL_GLOBAL_SETTINGS_FILE = path.join(cwd, 'absent-global');
 let session, core, piApi;
@@ -36,12 +37,14 @@ const server = http.createServer(async (req, res) => {
 	if (n === 3 || n === 5) call = ['read', { path: 'sample.txt' }];
 	if (n === 4) call = ['update_goal', { continuation: { kind: 'wait', reason: 'Await producer', deadline: new Date(Date.now() + 15000).toISOString(), polling: { interval_seconds: 10, max_checks: 1 } } }];
 	if (implicit) call = undefined;
+	if (budgetMode && n > 1) call = undefined;
 	res.writeHead(200, { 'content-type': 'text/event-stream' });
 	const emit = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
 	if (call) {
 		emit({ role: 'assistant', tool_calls: [{ index: 0, id: `call_${n}`, type: 'function', function: { name: call[0], arguments: JSON.stringify(call[1]) } }] });
 		emit({}, 'tool_calls');
 	} else { emit({ role: 'assistant', content: 'No disposition supplied.' }); emit({}, 'stop'); }
+	if (budgetMode) res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 30, completion_tokens: 1, total_tokens: 31 } })}\n\n`);
 	res.end('data: [DONE]\n\n');
 });
 async function until(predicate) {
@@ -53,6 +56,7 @@ try {
 	await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 	const manager = SessionManager.create(cwd, path.join(cwd, 'sessions'));
 	const goal = createGoal({ objective: 'Exercise explicit scheduling.', autoContinue: true, sisyphus: false });
+	if (budgetMode) { goal.tokenBudget = 100; goal.usage.tokensUsed = 80; }
 	writeActiveGoalFile({ cwd }, goal); manager.appendCustomEntry('pi-goal-focus', goalFocusDetails(goal.id, 'created'));
 	const runtime = await ModelRuntime.create({ authPath: path.join(cwd, 'auth'), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
 	runtime.registerProvider('fixture', { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, api: 'openai-completions', apiKey: 'fixture', models: [{ id: 'fixture', name: 'fixture', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 512 }] });
@@ -62,7 +66,15 @@ try {
 	await session.bindExtensions({});
 	session.subscribe(event => { if (event.type === 'auto_retry_start') retries++; });
 	await session.prompt('Run the fixture.');
-	if (implicit) {
+	if (budgetMode) {
+		assert.equal(core.state.goal.status, 'budget_limited');
+		assert.equal(workRequests, 2, 'one tool turn then a wrap-up, not an autonomous continuation');
+		assert.ok(JSON.stringify(requests[1]).includes('TOKEN BUDGET REACHED'), 'budget steering must reach the very next tool-loop request');
+		// Budget-limited state legitimately removes task tools (existing policy),
+		// so the host system prompt changes; ordinary conversation must not.
+		assert.equal(JSON.stringify(requests[1].messages.slice(1, requests[0].messages.length)), JSON.stringify(requests[0].messages.slice(1)), 'budget steering preserves earlier conversation bytes');
+		assert.equal(session.messages.filter(m => m.role === 'custom' && m.customType === 'pi-goal-snapshot').length, 2, 'active and budget-limited snapshots are both persisted');
+	} else if (implicit) {
 		await until(() => core.state.goal?.status === 'paused' && session.isIdle);
 		assert.equal(workRequests, 5, 'host execution plus four declaration-free continuations');
 		assert.equal(core.state.goal.scheduler.used, 4);
@@ -103,9 +115,16 @@ try {
 		assert.equal(requests.length, 10, 'eight work requests, one failed attempt, one compaction');
 	}
 	}
+	if (!lifecycleMode && !budgetMode) {
+		for (let i = 1; i < requests.length; i++) {
+			const previous = requests[i - 1].messages;
+			assert.equal(JSON.stringify(requests[i].messages.slice(0, previous.length)), JSON.stringify(previous), `real SDK request ${i + 1} preserves the previous serialized prefix`);
+			assert.deepEqual(requests[i].tools, requests[i - 1].tools, 'ordinary turns preserve tool schemas');
+		}
+	}
 	const requestChars = requests.map(r => JSON.stringify(r).length);
 	const liveContextChars = requests.map(r => (r.messages ?? []).filter(m => JSON.stringify(m.content).includes('[CURRENT EXECUTION STATE')).reduce((n, m) => n + JSON.stringify(m.content).length, 0));
-	console.log(JSON.stringify({ passed: true, requests: requests.length, used: core.state.goal.scheduler.used, retries, compactionRequests, requestChars, liveContextChars }));
+	console.log(JSON.stringify({ passed: true, requests: requests.length, used: core.state.goal.scheduler?.used ?? 0, retries, compactionRequests, requestChars, liveContextChars }));
 } finally {
 	core?.scheduler.shutdown(); core?.runtime.clearContinuationState();
 	if (session) { await session.abort(); session.dispose(); }

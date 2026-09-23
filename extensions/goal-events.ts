@@ -1,4 +1,3 @@
-import { cacheGoalHistory } from "./goal-prompt-cache.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	GOAL_EVENT_ENTRY,
@@ -15,15 +14,13 @@ import {
 import { buildCompactionSummary, buildPostCompactionGoalDelta } from "./goal-compaction.ts";
 import { latestAuditorResultForGoal, readGoalLedger, goalRuntimeEvents, invalidateGoalLedgerCache } from "./goal-ledger.ts";
 import { shouldArmPostCompactReminder, shouldInjectPostCompactReminder } from "./goal-policy.ts";
-import { formatTokenValue } from "./goal-core.ts";
 import { loadGoalSettings, invalidateGoalSettingsCache } from "./goal-settings.ts";
-import { budgetLine, budgetRemaining } from "./goal-accounting.ts";
 import { asRecord, nowIso, type AssistantMessageLike, type GoalRecord } from "./goal-record.ts";
 import { goalSelectorLabel, otherOpenGoalCount } from "./goal-pool.ts";
 import { invalidateGoalPoolCache } from "./storage/goal-files.ts";
 import { checkpointTriggerPrompt } from "./prompts/goal-prompts.ts";
 import { consumeOracleFollowupMarker, hasPendingOracleAdviceForFocusedGoal } from "./goal-oracle.ts";import {
-	goalPrompt,
+	goalSnapshotPrompt,
 	staleContinuationPrompt,
 	unfocusedOpenGoalsPrompt,
 	untrustedObjectiveBlock,
@@ -60,20 +57,15 @@ export function compactGoalCheckpointContext(
  */
 export function registerGoalEvents(core: GoalCore): void {
 	const { pi } = core;
-	let liveContent: string | undefined;
-	pi.on("before_provider_request", event => cacheGoalHistory(event.payload, liveContent));
+	let lastSnapshot: string | undefined;
 	let continuationAfterSettleFor: string | null = null;
 	let networkErrorRecoveryAfterSettleFor: string | null = null;
 
-	pi.on("context", async (event, ctx) => {
+	pi.on("context", async (event) => {
 		const filtered = filterGoalSessionContext(event.messages);
 		const messages = compactGoalCheckpointContext(filtered ?? event.messages, core.state.goal) ?? filtered;
-		const content = liveContent = currentGoalContext(ctx);
-		if (content) {
-			const live = { role: "custom" as const, customType: "pi-goal-live-context", content, display: false, timestamp: 0 };
-			return { messages: [...(messages ?? event.messages), live] as typeof event.messages };
-		}
-		return messages === null ? undefined : { messages: messages as typeof event.messages };
+		if (messages === null) return;
+		return { messages: messages as typeof event.messages };
 	});
 
 	pi.on("agent_start", async (_event, ctx) => { core.scheduler.begin(ctx); });
@@ -234,6 +226,11 @@ export function registerGoalEvents(core: GoalCore): void {
 		}
 
 		core.goalService.endTurn(ctx); // P1-3: single flush (lock + write + ledger batch)
+		// Tool-loop turns skip before_agent_start too. Queue durable wrap-up
+		// steering after all results, not between a call and its result.
+		if (core.state.goal?.status === "budget_limited" && event.toolResults?.length) {
+			publishSnapshot(snapshotText(ctx), true);
+		}
 	});
 
 	pi.on("message_end", async (event, ctx) => {
@@ -247,6 +244,7 @@ export function registerGoalEvents(core: GoalCore): void {
 	});
 
 	pi.on("session_start", async (event, ctx) => {
+		lastSnapshot = undefined;
 		core.auditMessages.clear();
 		// NAF: the zero-op read caches are session-scoped — a new session always
 		// re-reads settings/pool/ledger fresh from disk (cross-process and
@@ -293,6 +291,8 @@ export function registerGoalEvents(core: GoalCore): void {
 	});
 
 	pi.on("session_compact", async (_event, ctx) => {
+		// The matching snapshot may have been summarized out of model context.
+		lastSnapshot = undefined;
 		core.goalService.flushTurn(ctx); // P1-3: persist any buffered transaction before reload
 		if (core.state.goal) core.persist(ctx);
 		core.beginAccounting();
@@ -305,6 +305,7 @@ export function registerGoalEvents(core: GoalCore): void {
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
+		lastSnapshot = undefined;
 		core.auditMessages.clear();
 		core.goalService.flushTurn(ctx); // P1-3: persist any buffered transaction before reload
 		await core.loadState(ctx);
@@ -336,7 +337,7 @@ export function registerGoalEvents(core: GoalCore): void {
 					ctx.abort?.();
 				} catch {}
 				core.updateUI(ctx);
-				return;
+				return publishSnapshot(staleContinuationPrompt(incomingGoalId, core.state.goal));
 			}
 			core.runtime.setCheckpoint(null);
 		} else {
@@ -350,10 +351,25 @@ export function registerGoalEvents(core: GoalCore): void {
 
 		core.reconcileFocusedGoalFromDisk(ctx);
 		core.runningGoalId = core.state.goal?.status === "active" ? core.state.goal.id : null;
+		return publishSnapshot(snapshotText(ctx));
 	});
 
-	/** Request-only state: no live counters, focus, or reminders enter the system prefix. */
-	function currentGoalContext(ctx: ExtensionContext): string | undefined {
+	function publishSnapshot(content: string | undefined, persist = false) {
+		if (!content) return undefined;
+		const text = `This goal snapshot supersedes every earlier pi-goal-snapshot. Only this latest snapshot is current.\n\n${content}`;
+		if (text === lastSnapshot) return undefined;
+		const message = { customType: "pi-goal-snapshot", content: text, display: false };
+		// A rejected append must remain eligible for publication after resume.
+		if (persist) pi.sendMessage(message, { triggerTurn: false });
+		lastSnapshot = text;
+		return { message };
+	}
+	core.runtime.setBeforeFollowUp(ctx => {
+		publishSnapshot(snapshotText(ctx), true);
+	});
+
+	/** Append-only model text. Counters stay on the dashboard. */
+	function snapshotText(ctx: ExtensionContext): string | undefined {
 		const checkpoint = core.runtime.getCheckpointGoalId();
 		if (checkpoint !== null && !core.isActionableContinuationGoal(checkpoint)) {
 			return staleContinuationPrompt(checkpoint, core.state.goal);
@@ -369,9 +385,14 @@ export function registerGoalEvents(core: GoalCore): void {
 			if (openCount > 0) {
 				return unfocusedOpenGoalsPrompt(openCount);
 			}
-			return;
+			const hadSnapshot = lastSnapshot !== undefined || ctx.sessionManager.getBranch().some(
+				entry => entry.type === "custom_message" && entry.customType === "pi-goal-snapshot",
+			);
+			return hadSnapshot ? "[PI GOAL INACTIVE]\nThis session has no focused or open goal. Earlier goal snapshots are historical; do not continue their work autonomously." : undefined;
 		}
-		if (core.state.goal.status === "complete") return;
+		if (core.state.goal.status === "complete") {
+			return `[PI GOAL COMPLETE goalId=${core.state.goal.id}]\nThe goal is complete. Do not continue its work autonomously.`;
+		}
 		if (core.state.goal.status === "paused") {
 			const current = core.state.goal;
 			const pauseExtras: string[] = [];
@@ -397,18 +418,10 @@ export function registerGoalEvents(core: GoalCore): void {
 		// do not start new substantive work, never claim completion unless real.
 		if (core.state.goal?.status === "budget_limited") {
 			const limitedGoal = core.state.goal;
-			const budgetText = budgetLine(limitedGoal);
-			// E4: surface the remaining-vs-overshoot fact in the wrap-up steering.
-			const remaining = budgetRemaining(limitedGoal);
-			const balanceText = typeof remaining === "number"
-				? remaining < 0
-					? ` — ${formatTokenValue(-remaining)} over the budget`
-					: ` — ${formatTokenValue(remaining)} remaining`
-				: "";
 			const reminder = core.runtime.consumePostBudgetReminder()
-				? `\n\n[TOKEN BUDGET REACHED goalId=${limitedGoal.id}]\nThe goal's token budget has been reached${budgetText ? ` (${budgetText}${balanceText})` : ""}. Wrap up the current work in one final response: summarize what was accomplished and what remains, do not start new substantive work, and do not claim the goal is complete unless it actually is. To continue, the user must raise or remove the budget and resume the goal.`
+				? `\n\n[TOKEN BUDGET REACHED goalId=${limitedGoal.id}]\nThe goal's token budget has been reached. Wrap up the current work in one final response: summarize what was accomplished and what remains, do not start new substantive work, and do not claim the goal is complete unless it actually is. To continue, the user must raise or remove the budget and resume the goal.`
 				: "";
-			return `[PI GOAL BUDGET LIMITED goalId=${limitedGoal.id}]\n${untrustedObjectiveBlock(limitedGoal)}${budgetText ? `\n${budgetText}` : ""}${reminder}`;
+			return `[PI GOAL BUDGET LIMITED goalId=${limitedGoal.id}]\n${untrustedObjectiveBlock(limitedGoal)}${reminder}`;
 		}
   if (core.state.goal.status === "blocked") {
    const blocked = core.state.goal;
@@ -416,7 +429,7 @@ export function registerGoalEvents(core: GoalCore): void {
   }
 		const activeGoal = core.state.goal;
 		const settings = loadGoalSettings(ctx.cwd);
-		let prompt = goalPrompt(activeGoal, settings);
+		let prompt = goalSnapshotPrompt(activeGoal, settings);
 		// F5: [GOAL STALLED] steering note when the detector fired.
 		const stalledNote = core.checkStall(ctx);
 		if (stalledNote) prompt += stalledNote;
