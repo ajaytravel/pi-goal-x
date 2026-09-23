@@ -1,14 +1,14 @@
 /**
  * B4 — Prompt/context size and prefill estimate.
  * Goal block token counts (chars/4 estimate) for 10- and 50-task trees on
- * taskListBlock, continuationPrompt, and goalPrompt. The prefill estimate is
+ * taskListBlock, continuationPrompt, and goalSnapshotPrompt. The prefill estimate is
  * tokens / 1000 tok/s — a documented heuristic, NOT a live measurement (B8:
  * no live agents in benchmarks).
  */
 
 import { makeGoalRecord } from "./bench-common.mjs";
 import { Baseline, estimateTokens } from "./bench-common.mjs";
-import { taskListBlock, continuationPrompt, goalPrompt } from "../../extensions/prompts/goal-prompts.ts";
+import { taskListBlock, continuationPrompt, goalSnapshotPrompt } from "../../extensions/prompts/goal-prompts.ts";
 
 
 const PREFILL_TOK_PER_SEC = 1000; // documented heuristic for the estimate only
@@ -47,7 +47,8 @@ export function run(baseline) {
 		const blocks = [
 			["taskListBlock", taskListBlock(goal, {}), "prompts/goal-prompts"],
 			["continuationPrompt", continuationPrompt(goal, {}), "prompts/goal-prompts"],
-			["goalPrompt", goalPrompt(goal, {}), "prompts/goal-prompts"],
+			// Metric id kept as "goalPrompt" so existing baselines stay comparable.
+			["goalPrompt", goalSnapshotPrompt(goal, {}), "prompts/goal-prompts"],
 		];
 		for (const [name, text, modules] of blocks) {
 			const tokens = estimateTokens(text);

@@ -356,7 +356,7 @@ test("effectiveSettingsReport: objectiveMaxChars row shows the effective value a
 // ── Integration: prompt suppression with settings ────────────────────────
 
 import {
-	goalPrompt,
+	goalSnapshotPrompt,
 	continuationPrompt,
 	taskListBlock,
 	verificationContractBlock,
@@ -410,22 +410,22 @@ test("verificationContractBlock: not suppressed when settings is undefined (back
 	assert.ok(block.includes("Must verify X"), "should contain contract when no settings");
 });
 
-test("goalPrompt: contract block suppressed when disableContracts is true", () => {
+test("goalSnapshotPrompt: contract block suppressed when disableContracts is true", () => {
 	const g = goalWithTaskList({ verificationContract: "Must verify X" });
-	const prompt = goalPrompt(g, { disableContracts: true });
-	assert.ok(!prompt.includes("VERIFICATION CONTRACT"), "contract section suppressed from goalPrompt");
+	const prompt = goalSnapshotPrompt(g, { disableContracts: true });
+	assert.ok(!prompt.includes("VERIFICATION CONTRACT"), "contract section suppressed from goalSnapshotPrompt");
 });
 
-test("goalPrompt: task list suppressed when disableTasks is true", () => {
+test("goalSnapshotPrompt: task list suppressed when disableTasks is true", () => {
 	const g = goalWithTaskList();
 	g.taskList = { tasks: [{ id: "t1", title: "Task 1", status: "pending" }], blockCompletion: false, proposedAt: new Date().toISOString() };
-	const prompt = goalPrompt(g, { disableTasks: true });
-	assert.ok(!prompt.includes("TASK LIST"), "task list suppressed from goalPrompt");
+	const prompt = goalSnapshotPrompt(g, { disableTasks: true });
+	assert.ok(!prompt.includes("TASK LIST"), "task list suppressed from goalSnapshotPrompt");
 });
 
-test("goalPrompt: contract block shown when settings undefined (backward compat)", () => {
+test("goalSnapshotPrompt: contract block shown when settings undefined (backward compat)", () => {
 	const g = goalWithTaskList({ verificationContract: "Must verify X" });
-	const prompt = goalPrompt(g);
+	const prompt = goalSnapshotPrompt(g);
 	assert.ok(prompt.includes("VERIFICATION CONTRACT"), "contract shown when no settings");
 });
 

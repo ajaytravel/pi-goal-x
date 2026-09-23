@@ -57,7 +57,20 @@ export function compactGoalCheckpointContext(
  */
 export function registerGoalEvents(core: GoalCore): void {
 	const { pi } = core;
+	// Text of the latest snapshot still in model context; publication dedupes on it.
 	let lastSnapshot: string | undefined;
+	/** Seed dedupe from model-visible history so resume/tree/compaction never duplicate or drop a snapshot. */
+	const seedLastSnapshot = (ctx: ExtensionContext): void => {
+		const manager = ctx.sessionManager as { buildContextEntries?: () => unknown[]; getBranch?: () => unknown[] };
+		const entries = manager.buildContextEntries?.() ?? manager.getBranch?.() ?? [];
+		lastSnapshot = undefined;
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i] as { type?: string; customType?: string; content?: unknown };
+			if (entry?.type !== "custom_message" || entry.customType !== "pi-goal-snapshot") continue;
+			if (typeof entry.content === "string") lastSnapshot = entry.content;
+			return;
+		}
+	};
 	let continuationAfterSettleFor: string | null = null;
 	let networkErrorRecoveryAfterSettleFor: string | null = null;
 
@@ -244,7 +257,7 @@ export function registerGoalEvents(core: GoalCore): void {
 	});
 
 	pi.on("session_start", async (event, ctx) => {
-		lastSnapshot = undefined;
+		seedLastSnapshot(ctx);
 		core.auditMessages.clear();
 		// NAF: the zero-op read caches are session-scoped — a new session always
 		// re-reads settings/pool/ledger fresh from disk (cross-process and
@@ -292,7 +305,7 @@ export function registerGoalEvents(core: GoalCore): void {
 
 	pi.on("session_compact", async (_event, ctx) => {
 		// The matching snapshot may have been summarized out of model context.
-		lastSnapshot = undefined;
+		seedLastSnapshot(ctx);
 		core.goalService.flushTurn(ctx); // P1-3: persist any buffered transaction before reload
 		if (core.state.goal) core.persist(ctx);
 		core.beginAccounting();
@@ -305,7 +318,7 @@ export function registerGoalEvents(core: GoalCore): void {
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
-		lastSnapshot = undefined;
+		seedLastSnapshot(ctx);
 		core.auditMessages.clear();
 		core.goalService.flushTurn(ctx); // P1-3: persist any buffered transaction before reload
 		await core.loadState(ctx);
@@ -385,10 +398,8 @@ export function registerGoalEvents(core: GoalCore): void {
 			if (openCount > 0) {
 				return unfocusedOpenGoalsPrompt(openCount);
 			}
-			const hadSnapshot = lastSnapshot !== undefined || ctx.sessionManager.getBranch().some(
-				entry => entry.type === "custom_message" && entry.customType === "pi-goal-snapshot",
-			);
-			return hadSnapshot ? "[PI GOAL INACTIVE]\nThis session has no focused or open goal. Earlier goal snapshots are historical; do not continue their work autonomously." : undefined;
+			// Supersede goal instructions still in context; stay silent in sessions that never had any.
+			return lastSnapshot !== undefined ? "[PI GOAL INACTIVE]\nThis session has no focused or open goal. Earlier goal snapshots are historical; do not continue their work autonomously." : undefined;
 		}
 		if (core.state.goal.status === "complete") {
 			return `[PI GOAL COMPLETE goalId=${core.state.goal.id}]\nThe goal is complete. Do not continue its work autonomously.`;

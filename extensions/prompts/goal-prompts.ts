@@ -1,4 +1,3 @@
-import { schedulerSummary } from "../goal-scheduler-state.ts";
 import { taskIndex } from "../goal-task-index.ts";
 import { statusLabel, truncateText } from "../goal-core.ts";
 import { promptSafeObjective } from "../goal-contract.ts";
@@ -228,14 +227,8 @@ function retainedTaskChars(task: GoalTask): number {
   + (task.skipReason?.length ?? 0) + (task.subtasks?.reduce((n, child) => n + retainedTaskChars(child), 0) ?? 0);
 }
 
-export function goalPrompt(goal: GoalRecord, settings?: GoalSettings): string {
-	const fixed = cachedPrompt(goal, settings, "goal", () => buildGoalPrompt(goal, settings));
- const budget = budgetLine(goal);
- return `${fixed}\nUsage: ${formatUsage(goal)}${budget ? `\n${budget}` : ""}\n${schedulerSummary(goal.scheduler, settings?.maxAutonomousRuns)}`;
-}
-
 function buildGoalPrompt(goal: GoalRecord, settings?: GoalSettings): string {
- // Stable policy comes first; changing counters are appended by goalPrompt.
+ // Stable policy only; usage and allowance counters stay on the dashboard.
  // Bound individual data fields so essential rules can never be sliced off.
  return [
   `[PI GOAL ACTIVE goalId=${goal.id}]`,
@@ -247,16 +240,21 @@ function buildGoalPrompt(goal: GoalRecord, settings?: GoalSettings): string {
 /** Model-visible goal text. Counters stay on the dashboard, not in this message. */
 export function goalSnapshotPrompt(goal: GoalRecord, settings?: GoalSettings): string {
 	const fixed = cachedPrompt(goal, settings, "goal", () => buildGoalPrompt(goal, settings));
-	// Decisions are instructions, not usage counters. In particular, repair
-	// continuations must retain their next action even when allowance is hidden.
+	// Decisions are instructions, not usage counters. Extension-authored actions
+	// (repair, kickoff, recovery) must reach the model. A model-declared ready
+	// action is already in its own update_goal call; repeating it would append a
+	// full snapshot on every autonomous run.
 	const scheduler = goal.scheduler;
 	const instructions: string[] = [fixed];
-	if (scheduler?.decision?.kind === "ready") instructions.push(`Next action: ${scheduler.decision.nextAction}`);
+	const decision = scheduler?.decision;
+	if (decision?.kind === "ready" && decision.purpose !== "ready") instructions.push(`Next action: ${decision.nextAction}`);
 	if (scheduler?.wait) {
 		const wait = scheduler.wait;
 		instructions.push(`Waiting: ${wait.reason}; wait_id=${wait.id}; deadline=${new Date(wait.deadline).toISOString()}.`);
 	}
-	if (scheduler?.phase === "interrupted" || scheduler?.phase === "claimed") {
+	// "claimed" is the normal state while a continuation is being dispatched;
+	// only a genuinely interrupted dispatch needs user action.
+	if (scheduler?.phase === "interrupted") {
 		instructions.push("Execution requires dispatch admission or explicit /goal-resume after interruption.");
 	}
 	return instructions.join("\n\n");
@@ -310,14 +308,4 @@ export function unfocusedOpenGoalsPrompt(openGoalCount: number): string {
 		"Do not choose or switch focus autonomously. Focus is human-owned intent.",
 		"Ask the user to run /goal-focus, /goal-list, or /goal-resume before doing goal work.",
 	].join("\n");
-}
-
-function formatUsage(goal: GoalRecord): string {
-	const bits: string[] = [];
-	if (goal.usage.activeSeconds > 0) {
-		const s = goal.usage.activeSeconds;
-		bits.push(`${Math.floor(s / 60)}m${s % 60}s`);
-	}
-	if (goal.usage.tokensUsed > 0) bits.push(`${goal.usage.tokensUsed} tokens`);
-	return bits.length > 0 ? bits.join(" · ") : "none";
 }

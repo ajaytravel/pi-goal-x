@@ -6,7 +6,7 @@ All notable changes to pi-goal-x are documented here.
 
 ### Fixed
 
-- Relocate the cache breakpoint past Pi's effort-only marker (#67 follow-up): `cacheGoalHistory` resolved the live-state message with `messages.at(-1)`, so the contentless `{role: "system", content: [], output_config: {effort}}` that Pi appends for `supportsMidConvoEffort` models disabled the move and left the breakpoint on state rewritten every request. Relocation now keys on the last message carrying content. Implicit caching, disabled caching, and a content-bearing trailing message from another extension remain untouched.
+- Make goal text append-only so ordinary turns, tool loops, and continuations extend the previous provider request instead of replacing a request-only tail (#67 follow-up). Goal state is persisted as a `pi-goal-snapshot` only when its model-visible text changes, and earlier snapshots are never rewritten. Usage, budget, and run counters are no longer model-visible; extension-authored next actions and wait identity/deadline remain. Continuations append a changed snapshot before their checkpoint. Clearing or completing a goal, budget exhaustion in a tool loop, compaction, resume/tree navigation, and delegated workers are handled without duplicate or stale instructions. This supersedes the unreleased cache-breakpoint relocation: `cacheGoalHistory` (`extensions/goal-prompt-cache.ts`) and the counter-bearing `goalPrompt` are removed in favor of `goalSnapshotPrompt`.
 
 ## [0.31.6] — 2026-09-17
 

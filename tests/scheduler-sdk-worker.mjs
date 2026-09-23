@@ -116,6 +116,10 @@ try {
 	}
 	}
 	if (!lifecycleMode && !budgetMode) {
+		if (!implicit) {
+			const snapshots = requests.at(-1).messages.filter(m => JSON.stringify(m.content).includes('This goal snapshot supersedes'));
+			assert.equal(snapshots.length, 4, 'snapshots only for real changes: start, wait, wait cleared, repair');
+		}
 		for (let i = 1; i < requests.length; i++) {
 			const previous = requests[i - 1].messages;
 			assert.equal(JSON.stringify(requests[i].messages.slice(0, previous.length)), JSON.stringify(previous), `real SDK request ${i + 1} preserves the previous serialized prefix`);

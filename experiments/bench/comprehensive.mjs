@@ -5,7 +5,7 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { focusedFixture, beginFsCount, endFsCount } from './bench-common.mjs';
 import { loadGoalSettings } from '../../extensions/goal-settings.ts';
-import { goalPrompt } from '../../extensions/prompts/goal-prompts.ts';
+import { goalSnapshotPrompt } from '../../extensions/prompts/goal-prompts.ts';
 import { taskIndex } from '../../extensions/goal-task-index.ts';
 import { goalDetailPage } from '../../extensions/goal-detail.ts';
 import { readGoalLedger, invalidateGoalLedgerCache, goalActivityEvents } from '../../extensions/goal-ledger.ts';
@@ -40,7 +40,7 @@ try {
  }
  const goal = {...f.goal, objective: 'Detailed requirement with Unicode 🧭. '.repeat(1000), taskList: {blockCompletion: true, proposedAt: '2026-09-07', tasks: Array.from({length: 50}, (_,i) => ({id: `t${i}`, title: `Task ${i}: ` + 'meaningful detail '.repeat(20), status:'pending', verificationContract: 'Check every requested artifact. '.repeat(50)}))}};
  measure('tasks.index.50', () => taskIndex(goal.taskList.tasks));
- measure('prompt.warm.large', () => goalPrompt(goal));
+ measure('prompt.warm.large', () => goalSnapshotPrompt(goal));
  measure('detail.tasks.50', () => goalDetailPage(goal, {section:'tasks'}));
  measure('detail.objective.large', () => goalDetailPage(goal, {section:'objective'}));
  const theme = {fg: (_color, text) => text, bg: (_color, text) => text, bold: text => text, strikethrough: text => text};

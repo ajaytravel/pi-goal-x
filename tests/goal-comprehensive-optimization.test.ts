@@ -6,7 +6,7 @@ import path from "node:path";
 import { loadGoalSettings, loadSettingsSnapshot, invalidateGoalSettingsCache, mutateSettingsLayer } from "../extensions/goal-settings.ts";
 import { createGoal, type GoalTask } from "../extensions/goal-record.ts";
 import { taskIndex } from "../extensions/goal-task-index.ts";
-import { goalPrompt } from "../extensions/prompts/goal-prompts.ts";
+import { goalSnapshotPrompt } from "../extensions/prompts/goal-prompts.ts";
 import { goalDetailPage } from "../extensions/goal-detail.ts";
 import { readGoalLedger, appendGoalEvents, invalidateGoalLedgerCache, loadLedgerState, LEDGER_CHECKPOINT_FILE, type GoalLedgerEvent } from "../extensions/goal-ledger.ts";
 import { buildPostCompactionGoalDelta } from "../extensions/goal-compaction.ts";
@@ -53,15 +53,15 @@ test("task and prompt caches observe nested edits, reparenting, focus and settin
  const f = fixture(); try {
   const tasks: GoalTask[] = [{id:"p", title:"Parent", status:"pending", subtasks:[{id:"c", title:"Child", status:"pending", verificationContract:"Original contract"}]}, {id:"n",title:"Next",status:"pending"}];
   const goal = {...f.goal, taskList:{tasks,blockCompletion:true,proposedAt:"today"}, currentTaskId:"c"};
-  const old = taskIndex(tasks); const original = goalPrompt(goal);
+  const old = taskIndex(tasks); const original = goalSnapshotPrompt(goal);
   const child = tasks[0]!.subtasks![0]!;
   child.verificationContract = "Revised contract"; child.evidence = "Full evidence 🧭";
   assert.notEqual(taskIndex(tasks), old); assert.equal(old.byId.get("c")!.verificationContract, "Original contract");
-  assert.match(goalPrompt(goal), /Revised contract/); assert.notEqual(goalPrompt(goal),original);
+  assert.match(goalSnapshotPrompt(goal), /Revised contract/); assert.notEqual(goalSnapshotPrompt(goal),original);
   child.status = "complete"; tasks[0]!.subtasks = []; tasks[1]!.subtasks = [child];
   assert.equal(taskIndex(tasks).ordered.find(row => row.task.id === "c")!.parentId, "n");
-  goal.currentTaskId = "n"; assert.match(goalPrompt(goal), /Current: n/);
-  assert.doesNotMatch(goalPrompt(goal,{disableTasks:true}), /TASK LIST/);
+  goal.currentTaskId = "n"; assert.match(goalSnapshotPrompt(goal), /Current: n/);
+  assert.doesNotMatch(goalSnapshotPrompt(goal,{disableTasks:true}), /TASK LIST/);
   const copy = structuredClone(tasks); assert.equal(taskIndex(copy), taskIndex(tasks));
  } finally {f.cleanup();}
 });

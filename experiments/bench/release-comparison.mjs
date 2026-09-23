@@ -8,7 +8,9 @@ import { performance } from 'node:perf_hooks';
 const [root, label, output] = process.argv.slice(2);
 if (!root || !label || !output) throw new Error('Usage: release-comparison.mjs SOURCE_ROOT LABEL OUTPUT_JSON');
 const source = name => import(pathToFileURL(path.join(root, 'extensions', name)).href);
-const {goalPrompt} = await source('prompts/goal-prompts.ts');
+const prompts = await source('prompts/goal-prompts.ts');
+// Older releases export goalPrompt; newer ones export goalSnapshotPrompt.
+const goalPrompt = prompts.goalSnapshotPrompt ?? prompts.goalPrompt;
 const {deriveGoalDashboardModel} = await source('widgets/goal-dashboard-model.ts');
 const {renderExpandedDashboard} = await source('widgets/goal-dashboard-renderer.ts');
 const {deriveGoalActivity} = await source('goal-activity.ts');

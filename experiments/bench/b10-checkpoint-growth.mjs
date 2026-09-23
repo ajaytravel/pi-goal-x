@@ -16,7 +16,7 @@
 
 import { transformSessionLines } from "../../scripts/recover-session-checkpoints.mjs";
 import { compactGoalCheckpointContext } from "../../extensions/goal-events.ts";
-import { checkpointTriggerPrompt, goalPrompt, CHECKPOINT_TRIGGER_MAX_CHARS } from "../../extensions/prompts/goal-prompts.ts";
+import { checkpointTriggerPrompt, goalSnapshotPrompt, CHECKPOINT_TRIGGER_MAX_CHARS } from "../../extensions/prompts/goal-prompts.ts";
 import { makeGoalRecord } from "./bench-common.mjs";
 
 const LEGACY_CHECKPOINT_CHARS = 6400; // plan §17 fixture: ~6.4K chars per legacy full prompt
@@ -149,7 +149,7 @@ export function run(baseline) {
 	// the provider-visible messages (at most one checkpoint marker). Counting
 	// full-goal-block markers and objective occurrences guards PR A's
 	// single-source invariant.
-	const systemPrompt = `${"base system ".repeat(10)}\n\n${goalPrompt(goal)}`;
+	const systemPrompt = `${"base system ".repeat(10)}\n\n${goalSnapshotPrompt(goal)}`;
 	const composed = systemPrompt + "\n" + String(compacted[compacted.length - 1]?.content ?? "");
 	const fullGoalBlocks = (composed.match(/\[PI GOAL ACTIVE goalId=/g) ?? []).length;
 	const objectiveOccurrences = (composed.match(/Implement the full feature set\./g) ?? []).length;

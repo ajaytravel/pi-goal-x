@@ -582,3 +582,21 @@ test("resumed cleared session supersedes a historical active snapshot", async t 
 	const stopped = await h.handlers.before_agent_start!({ prompt: "hello" }, ctx);
 	assert.match(stopped?.message.content ?? "", /PI GOAL INACTIVE/);
 });
+
+for (const boundary of ["session_start", "session_tree", "session_compact"] as const) {
+	test(`${boundary} reuses a snapshot still in model context instead of duplicating it`, async t => {
+		const h = await fixture(t);
+		// Active-goal compaction deliberately appends a post-compaction resync;
+		// a paused goal isolates the dedupe behavior.
+		if (boundary === "session_compact") h.core.state.goal!.status = "paused";
+		const first = await h.handlers.before_agent_start!({ prompt: "work" }, h.ctx);
+		const kept = [{ type: "custom", customType: "pi-goal-focus", data: goalFocusDetails(h.core.state.goal!.id, "created") }, { type: "custom_message", ...first.message }];
+		const ctx = { ...h.ctx, sessionManager: { ...h.ctx.sessionManager, getBranch: () => kept, buildContextEntries: () => kept } } as unknown as ExtensionContext;
+		await h.handlers[boundary]!({ reason: "resume" }, ctx);
+		assert.equal(await h.handlers.before_agent_start!({ prompt: "again" }, ctx), undefined, "the same text is already current");
+		const summarized = { ...ctx, sessionManager: { ...ctx.sessionManager, buildContextEntries: () => [kept[0]] } } as unknown as ExtensionContext;
+		await h.handlers[boundary]!({ reason: "resume" }, summarized);
+		const republished = await h.handlers.before_agent_start!({ prompt: "after summary" }, summarized);
+		assert.equal(republished?.message.content, first.message.content, "a snapshot summarized out of context is republished");
+	});
+}
