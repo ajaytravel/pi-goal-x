@@ -29,3 +29,6 @@ clearGoalWidget resets `widgetRegistered`.
 `before_agent_start` still injects `[PI GOAL UNFOCUSED]` with "Do not choose
 or switch focus autonomously" whenever there is no focused goal and open goals
 exist. A dedicated test pins this text against the setting in both states.
+
+> Superseded 2026-09-24 by `specs/2026-09-24-unfocused-session-silence`; the
+> prompt and its pinning test were removed.

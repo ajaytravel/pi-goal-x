@@ -11,7 +11,6 @@ import {
 	objectiveEditedPrompt,
 	staleContinuationPrompt,
 	taskListBlock,
-	unfocusedOpenGoalsPrompt,
 } from "../extensions/prompts/goal-prompts.ts";
 
 function goal(overrides = {}) {
@@ -77,14 +76,6 @@ test("edited-objective and stale prompts point the agent at the right lifecycle 
 	assert.match(edited, /&lt;untrusted_objective&gt;/);
 	assert.match(stale, /^\[GOAL STALE goalId=old-goal\]/);
 	assert.match(stale, /Do not perform task work for this stale checkpoint/);
-});
-
-test("unfocused prompt keeps multi-goal focus human-owned", () => {
-	const prompt = unfocusedOpenGoalsPrompt(3);
-	assert.match(prompt, /^\[PI GOAL UNFOCUSED\]/);
-	assert.match(prompt, /3 open pi goals/);
-	assert.match(prompt, /Do not choose or switch focus autonomously/);
-	assert.match(prompt, /\/goal-focus/);
 });
 
 test("taskListBlock renders correctly with mixed statuses", () => {

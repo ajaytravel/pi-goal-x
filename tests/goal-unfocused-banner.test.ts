@@ -1,9 +1,7 @@
 /**
  * PR #29 clean rewrite — layered hideUnfocusedBanner with live refresh.
  *
- * Pins: boolean parsing, global/project layering, live hide/restore before
- * the settings handler resolves, focused dashboard immunity, and the
- * model-facing [PI GOAL UNFOCUSED] safety invariant.
+ * Pins boolean parsing and global/project layering of the UI-only setting.
  */
 
 import { describe, it } from "node:test";
@@ -19,7 +17,6 @@ import {
 	parseSettingsLayer,
 	invalidateGoalSettingsCache,
 } from "../extensions/goal-settings.ts";
-import { unfocusedOpenGoalsPrompt } from "../extensions/prompts/goal-prompts.ts";
 
 function withTempDir(fn: (dir: string) => void): void {
 	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "goal-banner-")));
@@ -82,17 +79,5 @@ describe("hideUnfocusedBanner setting", () => {
 			mutateSettingsLayer({ scope: "project", cwd: dir, env, mutation: { op: "unset", path: ["hideUnfocusedBanner"] } });
 			assert.equal(loadGoalSettings(dir, env).hideUnfocusedBanner, false, "unset returns to inherited/default");
 		});
-	});
-});
-
-describe("model-facing safety invariant (PR #29 §39)", () => {
-	it("[PI GOAL UNFOCUSED] prompt text is unchanged by the banner setting", () => {
-		const prompt = unfocusedOpenGoalsPrompt(2);
-		assert.match(prompt, /\[PI GOAL UNFOCUSED\]/);
-		assert.match(prompt, /Do not choose or switch focus autonomously/);
-		assert.match(prompt, /Ask the user to run \/goal-focus/);
-		// The prompt builder takes only the open-goal count — the setting cannot
-		// reach it structurally.
-		assert.equal(unfocusedOpenGoalsPrompt(1), unfocusedOpenGoalsPrompt(1));
 	});
 });

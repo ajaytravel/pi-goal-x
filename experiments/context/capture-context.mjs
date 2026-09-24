@@ -158,6 +158,8 @@ export async function captureOne(fixtureId) {
 	let raw = scenario.messages ?? (scenario.goal ? baseConversation(scenario.goal) : [userMessage("Hello")]);
 	if (scenario.draftPrompt) raw = [...raw, userMessage(scenario.draftPrompt)];
 	const messages = [...raw];
+	// Append-only goal state arrives as a before_agent_start custom message, not system text.
+	if (turn.message) messages.push({ role: "custom", ...turn.message, timestamp: 0 });
 
 	const actualSystem = turn.systemPrompt ?? capture.ctx.getSystemPrompt();
  const childRequests = [];

@@ -662,9 +662,8 @@ export function createGoalCore(
 			return;
 		}
 		if (!state.goal) {
-			// PR #29: layered hideUnfocusedBanner suppresses BOTH the unfocused
-			// widget and the status hint. Focused dashboards and audit UI are
-			// unaffected; the model-facing [PI GOAL UNFOCUSED] prompt is unchanged.
+			// hideUnfocusedBanner affects only the widget and status hint.
+			// Unfocused model context is independent of this UI setting.
 			if (loadGoalSettings(ctx.cwd).hideUnfocusedBanner === true) {
 				clearGoalWidget(ctx);
 				return;

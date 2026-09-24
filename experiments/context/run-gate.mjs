@@ -79,8 +79,10 @@ for (const fixtureId of expectedFixtureIds) {
 		}
 	}
 	if (captured.extensionSystem) failures.push(`${fixtureId}: goal state must not enter the system prefix`);
-	const liveState = captured.messages.filter(m => m.customType === "pi-goal-live-context");
-	if (liveState.length > 1 || (liveState.length && captured.messages.at(-1) !== liveState[0])) failures.push(`${fixtureId}: live state must occur once at the tail`);
+	if (semantic.unfocusedSafety !== 0) failures.push(`${fixtureId}: unfocused sessions must not receive goal reminders`);
+	const liveState = captured.messages.filter(m => m.customType === "pi-goal-snapshot");
+	// Append-only snapshots are never moved to the tail; later tool results may follow them.
+	if (liveState.length > 1) failures.push(`${fixtureId}: goal snapshot must occur at most once per captured request`);
 	const liveText = liveState[0]?.content ?? "";
 
 	// Required single-source markers on active-goal fixtures whose turn was

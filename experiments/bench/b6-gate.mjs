@@ -45,12 +45,17 @@ const beforeMap = byId(before.rows);
 const afterMap = byId(after.rows);
 
 const failures = [];
+// Rows whose measured surface was intentionally removed; historical baselines keep them.
+const RETIRED_ROWS = new Map([
+	["B7.runtime.unfocusedPrompt", "unfocused sessions no longer receive a goal reminder (2026-09-24-unfocused-session-silence)"],
+]);
 const regressions = [];
 
 // 1. No-regression rule: every numeric p50 row (headroom AND exempt).
 for (const [id, bRow] of beforeMap) {
 	const aRow = afterMap.get(id);
 	if (!aRow) {
+		if (RETIRED_ROWS.has(id)) continue;
 		failures.push(`${id}: missing in after run`);
 		continue;
 	}
@@ -111,6 +116,7 @@ if (campaign === "naf") {
 	for (const row of classifyRows(before)) {
 		const aRow = afterMap.get(row.id);
 		if (!aRow) {
+			if (RETIRED_ROWS.has(row.id)) continue;
 			failures.push(`${row.id}: missing in after run`);
 			continue;
 		}

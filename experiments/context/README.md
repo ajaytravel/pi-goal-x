@@ -24,6 +24,8 @@ post-hook message list, and ACTIVE tool schemas — not isolated prompt strings.
 - Schema size follows the active lifecycle profile. Extension-attributable size includes SDK guidance, injected state, goal-tool/custom results, and child requests. Conversation serialization preserves tool arguments and result metadata.
 - Post-issue-#30 invariant enforced by the gate: historical checkpoint payload
   visible to the provider must be 0 chars on every fixture.
+- Unfocused sessions must carry no `[PI GOAL UNFOCUSED]` reminder on any fixture.
+- Append-only goal state is captured from the `before_agent_start` custom message.
 
 ## Runtime/token optimization campaign
 

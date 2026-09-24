@@ -42,7 +42,7 @@ import { extractVerificationContract, promptSafeObjective } from "../../extensio
 import { normalizeGoalRecord } from "../../extensions/goal-record.ts";
 import { serializeGoalFile, parseGoalFile } from "../../extensions/storage/goal-files.ts";
 import { latestEventsForGoal, reconstructGoalLedger } from "../../extensions/goal-ledger.ts";
-import { staleContinuationPrompt, unfocusedOpenGoalsPrompt } from "../../extensions/prompts/goal-prompts.ts";
+import { staleContinuationPrompt } from "../../extensions/prompts/goal-prompts.ts";
 import { buildDraftConfirmationText } from "../../extensions/goal-draft.ts";
 import { formatQuestionnaireAnswers } from "../../extensions/goal-questionnaire.ts";
 import { goalDetails } from "../../extensions/goal-format.ts";
@@ -267,9 +267,6 @@ export async function run(baseline) {
 
 	r = measure(() => staleContinuationPrompt("stale-id", g20), { n: 2000 });
 	baseline.add({ id: "B7.runtime.stalePrompt", label: "staleContinuationPrompt", modules: "prompts/goal-prompts + goal-core", fixture: "1 goal", n: r.n, p50: r.p50, p95: r.p95, max: r.max, notes: `mean ${r.mean}ms` });
-
-	r = measure(() => unfocusedOpenGoalsPrompt(3), { n: 2000 });
-	baseline.add({ id: "B7.runtime.unfocusedPrompt", label: "unfocusedOpenGoalsPrompt", modules: "prompts/goal-prompts", fixture: "3 open goals", n: r.n, p50: r.p50, p95: r.p95, max: r.max, notes: `mean ${r.mean}ms` });
 
 	// ── D. unified dashboard (0.24.0) + post-bench non-agent flows ────────
 	// The dashboard model + renderer shipped after the original B7 surface was

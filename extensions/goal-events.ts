@@ -22,7 +22,6 @@ import { checkpointTriggerPrompt } from "./prompts/goal-prompts.ts";
 import { consumeOracleFollowupMarker, hasPendingOracleAdviceForFocusedGoal } from "./goal-oracle.ts";import {
 	goalSnapshotPrompt,
 	staleContinuationPrompt,
-	unfocusedOpenGoalsPrompt,
 	untrustedObjectiveBlock,
 } from "./prompts/goal-prompts.ts";
 import { hasActiveDraft, rehydrateDraft } from "./goal-drafting.ts";
@@ -394,12 +393,9 @@ export function registerGoalEvents(core: GoalCore): void {
 		const getPromptLedger = () => promptLedger ??= { events: core.state.goal ? goalRuntimeEvents(ctx, core.state.goal.id) : [], malformed: 0 };
 
 		if (!core.state.goal) {
-			const openCount = otherOpenGoalCount(core.goalsById, null);
-			if (openCount > 0) {
-				return unfocusedOpenGoalsPrompt(openCount);
-			}
-			// Supersede goal instructions still in context; stay silent in sessions that never had any.
-			return lastSnapshot !== undefined ? "[PI GOAL INACTIVE]\nThis session has no focused or open goal. Earlier goal snapshots are historical; do not continue their work autonomously." : undefined;
+			// Never advertise another session's open goals to an unfocused session.
+			// Only supersede an earlier model-visible snapshot in this session.
+			return lastSnapshot !== undefined ? "[PI GOAL INACTIVE]\nThis session has no focused goal. Earlier goal snapshots are historical; do not continue their work autonomously." : undefined;
 		}
 		if (core.state.goal.status === "complete") {
 			return `[PI GOAL COMPLETE goalId=${core.state.goal.id}]\nThe goal is complete. Do not continue its work autonomously.`;

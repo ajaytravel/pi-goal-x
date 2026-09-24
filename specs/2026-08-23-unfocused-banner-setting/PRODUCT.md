@@ -32,3 +32,7 @@ unfocus anything and does not change open-goal storage.
 The `[PI GOAL UNFOCUSED]` system-prompt guidance ("Do not choose or switch
 focus autonomously") is unchanged in every state. This setting is purely
 visual.
+
+> Superseded 2026-09-24 by `specs/2026-09-24-unfocused-session-silence`:
+> unfocused sessions no longer receive `[PI GOAL UNFOCUSED]`. The setting
+> remains purely visual.

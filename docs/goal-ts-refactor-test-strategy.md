@@ -46,7 +46,7 @@ The fast local suite uses Node's built-in `node:test` runner and currently cover
 | `extensions/goal-auditor.ts` | Independent pi auditor agent config parsing, prompt construction, approval marker parsing, and completion audit execution |
 | `extensions/goal-questionnaire.ts` | Question normalization, duplicate id handling, option filtering, recommended-index validation, answer formatting, confirm/cancel mapping, `goal_question` and `goal_questionnaire` registration |
 | `extensions/goal-tool-names.ts` | Published tool constants, active/paused/drafting tool lists, goal work-tool list, progress-tool list for empty-turn gating, post-stop allowlist, question-like tool detection |
-| `extensions/prompts/goal-prompts.ts` | Active-goal, continuation, tweak-drafting, stale-checkpoint, and unfocused multi-open prompt text |
+| `extensions/prompts/goal-prompts.ts` | Active-goal, continuation, tweak-drafting, and stale-checkpoint prompt text (unfocused sessions publish no unsolicited goal snapshot) |
 | `extensions/storage/goal-files.ts` | Safe goal paths, serialize/parse round trip, prompt-body disk edits, active-goal scans, active/archive writes |
 | `extensions/widgets/goal-widget.ts` | Goal Beacon rendering, Sisyphus style label, status/path lines, blocker/suggested-action display, `+N open` and unfocused guidance |
 | `extensions/widgets/goal-notifications.ts` | Widget-style notification text for goal lifecycle toasts |

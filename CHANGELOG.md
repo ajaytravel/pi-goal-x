@@ -6,6 +6,8 @@ All notable changes to pi-goal-x are documented here.
 
 ### Fixed
 
+- Keep unrelated sessions silent when another session has an open regular or Sisyphus goal in the same project. Do not publish unfocused-goal snapshots; when a session previously saw goal instructions, publish one inactive snapshot to supersede them. Sessions holding the previous inactive wording receive one replacement. The UI goal indicator and explicit focus/resume controls remain unchanged. `context:gate` now captures append-only goal snapshots and rejects unfocused reminders; the retired B7 benchmark row is exempted in the B6 gate (`specs/2026-09-24-unfocused-session-silence`).
+
 - Make goal text append-only so ordinary turns, tool loops, and continuations extend the previous provider request instead of replacing a request-only tail (#67 follow-up). Goal state is persisted as a `pi-goal-snapshot` only when its model-visible text changes, and earlier snapshots are never rewritten. Usage, budget, and run counters are no longer model-visible; extension-authored next actions and wait identity/deadline remain. Continuations append a changed snapshot before their checkpoint. Clearing or completing a goal, budget exhaustion in a tool loop, compaction, resume/tree navigation, and delegated workers are handled without duplicate or stale instructions. This supersedes the unreleased cache-breakpoint relocation: `cacheGoalHistory` (`extensions/goal-prompt-cache.ts`) and the counter-bearing `goalPrompt` are removed in favor of `goalSnapshotPrompt`.
 
 ## [0.31.6] — 2026-09-17
